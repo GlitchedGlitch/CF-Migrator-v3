@@ -70,7 +70,7 @@ async def import_cf_data(ctx):
         TradeObject as BDTradeObject,
     )
 
-    migration_file = Path("/migration_export.json.bz2")
+    migration_file = Path("/migration_export.json")
     if not migration_file.exists():
         await ctx.send("❌ **Migration file not found!** Please run export first and upload the file.")
         return
