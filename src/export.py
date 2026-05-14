@@ -1,5 +1,5 @@
 """
-CF-Migrator v2 - Export Script
+CF-Migrator v3 - Export Script
 Exports CarFigures database to a compressed file for migration to BallsDex
 """
 
