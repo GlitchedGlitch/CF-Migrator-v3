@@ -1,4 +1,4 @@
-# CF-Migrator-v2
+# CF-Migrator-v3
 
 ![CF-Migrator Thumbnail](https://raw.githubusercontent.com/ItsMeFuture/CF-Migrator-v2/refs/heads/main/assets/thumbnail.png)
 
