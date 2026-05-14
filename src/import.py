@@ -72,7 +72,7 @@ async def import_cf_data(ctx):
     )
 
     migration_file = os.path.isfile("/migration_export.json")
-    if not migration_file.exists():
+    if not migration_file():
         await ctx.send("❌ **Migration file not found!** Please run export first and upload the file.")
         return
 
