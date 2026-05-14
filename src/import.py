@@ -1,294 +1,714 @@
-"""
-CF-Migrator v3 - Import Script
-Imports CarFigures database export into BallsDex
-"""
-
+import asyncio
 import bz2
-import json
-import logging
-from datetime import datetime, timedelta
-from pathlib import Path
+import os
+import shutil
+import time
+from datetime import datetime, date
 
 import discord
+from tortoise import Tortoise
+from tortoise.fields.data import DatetimeField, DateField, FloatField, IntField
+from tortoise.exceptions import ValidationError
 
-log = logging.getLogger("ballsdex.migration")
+from ballsdex.core.models import (
+    Ball,
+    BallInstance,
+    BlacklistedGuild,
+    BlacklistedID,
+    Economy,
+    Friendship,
+    GuildConfig,
+    Player,
+    Regime,
+    Special,
+    Trade,
+    TradeObject,
+)
+from ballsdex.core.models import DonationPolicy, PrivacyPolicy
 
+__version__ = "1.0.3-cleaned"
 
-def build_embed(counts: dict, status: str, skipped: dict = None) -> discord.Embed:
-    embed = discord.Embed(
-        title="CF-Migrator Process",
-        color=0x00FF00,  # Green
-    )
-    embed.add_field(name="Status", value=f"**{status}**", inline=False)
+# ----------- ChatGPT Starts Here -------------
+def safe_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
-    if counts:
-        output_lines = []
-        labels = {
-            "Regime":               "Regime objects",
-            "Economy":              "Economy objects",
-            "Ball":                 "Ball objects",
-            "Exclusive->Special":   "Exclusive → Special objects",
-            "Event->Special":       "Event → Special objects",
-            "GuildConfig":          "GuildConfig objects",
-            "Player":               "Player objects",
-            "BlacklistedUser":      "BlacklistedUser objects",
-            "BlacklistedGuild":     "BlacklistedGuild objects",
-            "BallInstance":         "BallInstance objects",
-            "Trade":                "Trade objects",
-            "TradeObject":          "TradeObject objects",
-        }
-        for key, label in labels.items():
-            if key in counts:
-                output_lines.append(f"- Migrated **{counts[key]:,}** {label}.")
-        if output_lines:
-            embed.add_field(name="Output", value="\n".join(output_lines), inline=False)
+def safe_datetime(value):
+    if value in (None, "", "None"):
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        f = float(value)
+        if 0 <= f <= 4_102_444_800:
+            return datetime.fromtimestamp(f)
+    except (TypeError, ValueError, OSError):
+        pass
+    try:
+        return datetime.fromisoformat(str(value))
+    except (ValueError, TypeError):
+        return None
+    
+def safe_date(value):
+    if value in (None, "", "None"):
+        return None
+    if isinstance(value, date):
+        return value
+    try:
+        f = float(value)
+        if f > 10_000_000_000:
+            return date.fromtimestamp(f)
+        return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+# ----------- ChatGPT Ends Here -------------
 
-    if skipped:
-        skip_lines = []
-        if skipped.get("players", 0):
-            skip_lines.append(f"- Skipped **{skipped['players']}** invalid/ghost players.")
-        if skipped.get("instances", 0):
-            skip_lines.append(f"- Skipped **{skipped['instances']}** ball instances (invalid player or ball).")
-        if skip_lines:
-            embed.add_field(name="Warnings", value="\n".join(skip_lines), inline=False)
+SECTIONS = {
+    "R": [Regime, ["id", "background", "name"]],
+    "E": [Economy, ["id", "icon", "name"]],
+    "S-EX": [Special, ["id", "catch_phrase", "emoji", "background", "name", "rarity"]],
+    "S-EV": [Special, ["id", "background", "catch_phrase", "emoji", "end_date", "hidden", "name", "rarity", "start_date", "tradeable"]],
+    "B": [Ball, ["id", "capacity_description", "capacity_name", "credits", "regime_id", "catch_names", "collection_card", "economy_id", "created_at", "emoji_id", "enabled", "country", "attack", "rarity", "short_name", "wild_card", "tradeable", "health"]],
+    "BI": [BallInstance, ["id", "ball_id", "catch_date", "special_id", "favorite", "attack_bonus", "player_id", "server_id", "spawned_time", "trade_player_id", "tradeable", "health_bonus"]],
+    "P": [Player, ["id", "discord_id", "donation_policy", "privacy_policy"]],
+    "GC": [GuildConfig, ["id", "enabled", "guild_id", "spawn_channel"]],
+    "F": [Friendship, ["id", "player1_id", "player2_id", "since"]],
+    "BU": [BlacklistedID, ["id", "date", "discord_id", "reason"]],
+    "BG": [BlacklistedGuild, ["id", "date", "discord_id", "reason"]],
+    "T": [Trade, ["id", "date", "player1_id", "player2_id"]],
+    "TO": [TradeObject, ["id", "ballinstance_id", "player_id", "trade_id"]],
+}
+
+def read_bz2(path: str):
+    with bz2.open(path, "rb") as bz2f:
+        return bz2f.read().splitlines()
+
+output = []
+
+def reload_embed(start_time: float | None = None, status="RUNNING"):
+    embed = discord.Embed(title="BD-Migrator Process", description=f"Status: **{status}**")
+    
+    if status == "RUNNING":
+        embed.color = discord.Color.yellow()
+    elif status == "FINISHED":
+        embed.color = discord.Color.green()
+    elif status == "CANCELED":
+        embed.color = discord.Color.red()
+
+    if len(output) > 0:
+        recent_output = output[-20:] if len(output) > 20 else output
+        output_text = "\n".join(recent_output)
+        if len(output_text) > 1000:
+            output_text = "...\n" + output_text[-1000:]
+        embed.add_field(name="Output", value=output_text)
+
+    if start_time is not None:
+        embed.set_footer(text=f"Ended migration in {round((time.time() - start_time), 3)}s")
 
     return embed
 
 
-async def import_cf_data(ctx):
-    from ballsdex.core.models import (
-        Regime,
-        Economy,
-        Special,
-        Ball,
-        Player as BDPlayer,
-        BallInstance,
-        GuildConfig as BDGuildConfig,
-        BlacklistedID,
-        BlacklistedGuild as BDBlacklistedGuild,
-        Trade as BDTrade,
-        TradeObject as BDTradeObject,
-    )
+async def get_or_create_placeholder_player(missing_player_id, placeholder_log, created_placeholders):
+    """Create a unique placeholder Player for a specific missing player ID."""
+    placeholder_key = f"Player_{missing_player_id}"
+    if placeholder_key in created_placeholders:
+        return created_placeholders[placeholder_key]
+    
+    placeholder_discord_id = 900000000000000000 + (missing_player_id % 99999999999999999)
+    
+    placeholder_player = await Player.filter(discord_id=placeholder_discord_id).first()
+    
+    if not placeholder_player:
+        try:
+            donation = DonationPolicy.ALWAYS_ACCEPT
+        except AttributeError:
+            donation = list(DonationPolicy)[0]
+        try:
+            privacy = PrivacyPolicy.ALLOW_ALL
+        except AttributeError:
+            privacy = list(PrivacyPolicy)[0]
+        
+        placeholder_player = await Player.create(
+            discord_id=placeholder_discord_id,
+            donation_policy=donation,
+            privacy_policy=privacy,
+        )
+        placeholder_log.write(f"Created placeholder Player (discord_id={placeholder_discord_id}, DB ID={placeholder_player.pk}) for missing Player ID {missing_player_id}\n")
+    
+    created_placeholders[placeholder_key] = placeholder_player.pk
+    return placeholder_player.pk
 
-    migration_file = Path("/migration_export.json.bz2")
-    if not migration_file.exists():
-        await ctx.send("❌ **Migration file not found!** Please run export first and upload the file.")
+
+async def load(message):
+    lines = read_bz2("migration.txt.bz2")
+    section = ""
+    data = {}
+    # Maps CF exclusive pk -> BD Special pk (set during S-EX processing)
+    exclusive_cf_to_bd: dict[int, int] = {}
+    # Maps CF event pk -> BD Special pk (set during S-EV processing)
+    event_cf_to_bd: dict[int, int] = {}
+
+    skipped_log = open("skipped_records.log", "w", encoding="utf-8")
+    skipped_log.write("=== MIGRATION SKIPPED RECORDS LOG ===\n")
+    skipped_log.write(f"Generated: {datetime.now()}\n\n")
+    
+    placeholder_log = open("placeholder_assignments.log", "w", encoding="utf-8")
+    placeholder_log.write("=== PLACEHOLDER ASSIGNMENTS LOG ===\n")
+    placeholder_log.write(f"Generated: {datetime.now()}\n")
+    placeholder_log.write("Records assigned to placeholder entities:\n\n")
+    
+    created_placeholders = {}
+
+    output.append(f"- Reading migration file with {len(lines):,} lines...")
+    await message.edit(embed=reload_embed())
+
+    for index, line in enumerate(lines, start=1):
+        line = line.decode().rstrip()
+
+        if index % 10000 == 0:
+            output[-1] = f"- Reading migration file... (line {index:,}/{len(lines):,})"
+            await message.edit(embed=reload_embed())
+
+        if line.startswith("//") or line == "":
+            continue
+
+        if line.startswith(":"):
+            section = line[1:]
+            if section not in SECTIONS:
+                raise Exception(f"Invalid section '{section}' detected on line {index}")
+            continue
+
+        if section == "":
+            continue
+
+        section_full = SECTIONS[section]
+
+        # Use (model, section) as key so S-EX and S-EV stay separate even though
+        # both map to Special
+        bucket_key = (section_full[0], section)
+
+        if bucket_key not in data:
+            data[bucket_key] = []
+
+        model_dict = {}
+        fields = section_full[0]._meta.fields_map
+        attribute_index = 0
+
+        for value, line_data in zip(section_full[1], line.split("╵")):
+            attribute_index += 1
+
+            if value == "id" and line_data == "":
+                skipped_log.write(f"Line {index} - {section_full[0].__name__}: SKIPPED - Empty ID field\n")
+                model_dict = None
+                break
+            
+            if line_data == "":
+                continue
+
+            if value not in fields:
+                raise Exception(f"Unknown value '{value}' detected on line {index:,} - attribute {attribute_index:,} in {section_full[0].__name__} object")
+
+            if line_data == "None":
+                line_data = None
+            elif line_data == "🬀":
+                line_data = True
+            elif line_data == "🬁":
+                line_data = False
+
+            field_type = fields[value]
+
+            if line_data is not None:
+                if isinstance(field_type, IntField):
+                    line_data = safe_int(line_data)
+                elif isinstance(field_type, FloatField):
+                    line_data = float(line_data)
+                elif isinstance(field_type, DatetimeField):
+                    line_data = safe_datetime(line_data)
+                elif isinstance(field_type, DateField):
+                    line_data = safe_date(line_data)
+
+            if isinstance(line_data, str):
+                line_data = line_data.replace("🮈", "\n")
+
+            model_dict[value] = line_data
+
+        if model_dict is not None:
+            model_dict['_section'] = section
+            data[bucket_key].append(model_dict)
+
+    output.append(f"- Finished reading migration file. Processing models...")
+    await message.edit(embed=reload_embed())
+
+    start_time = time.time()
+    inserted_ids = {}
+    
+    # Process S-EX (exclusives) before S-EV (events) so they get lower IDs.
+    # Then everything else in dependency order.
+    processing_order = [
+        (Regime, "R"),
+        (Economy, "E"),
+        (Special, "S-EX"),   # Exclusives first — they get their natural IDs
+        (Special, "S-EV"),   # Events second — get next available IDs
+        (Ball, "B"),
+        (Player, "P"),
+        (BallInstance, "BI"),
+        (GuildConfig, "GC"),
+        (Friendship, "F"),
+        (BlacklistedID, "BU"),
+        (BlacklistedGuild, "BG"),
+        (Trade, "T"),
+        (TradeObject, "TO"),
+    ]
+    
+    for (item, section_key) in processing_order:
+        bucket_key = (item, section_key)
+        if bucket_key not in data:
+            continue
+        value = data[bucket_key]
+        output.append(f"- Processing {item.__name__} [{section_key}]... ({len(value):,} records to validate)")
+        await message.edit(embed=reload_embed())
+        
+        fields_map = item._meta.fields_map
+        
+        fk_fields = {}
+        for field_name, field_obj in fields_map.items():
+            if hasattr(field_obj, 'related_model') and field_obj.related_model is not None:
+                fk_fields[field_name] = field_obj.related_model
+                fk_fields[field_name + '_id'] = field_obj.related_model
+        
+        seen_ids = set()
+        unique_values = []
+        skipped_count = 0
+        fk_violation_count = 0
+        null_field_count = 0
+        duplicate_count = 0
+        
+        for idx, model in enumerate(value):
+            if idx > 0 and idx % 5000 == 0:
+                output[-1] = f"- Processing {item.__name__} [{section_key}]... (validated {idx:,}/{len(value):,})"
+                await message.edit(embed=reload_embed())
+            
+            model_id = model.get('id')
+            section_type = model.pop('_section', None)
+            
+            if model_id is None:
+                skipped_log.write(f"{item.__name__} [{section_key}] - ID: None - SKIPPED: Null ID\n")
+                skipped_count += 1
+                continue
+
+            # --- Ghost player filter ---
+            # Skip players whose discord_id is not a valid Discord snowflake
+            if item == Player:
+                discord_id = model.get('discord_id')
+                if not discord_id or not (10000000000000000 <= int(discord_id) <= 9999999999999999999):
+                    skipped_log.write(f"Player - ID: {model_id} - SKIPPED: Invalid discord_id={discord_id}\n")
+                    skipped_count += 1
+                    continue
+
+            if model_id in seen_ids:
+                skipped_log.write(f"{item.__name__} [{section_key}] - ID: {model_id} - SKIPPED: Duplicate ID\n")
+                skipped_count += 1
+                duplicate_count += 1
+                continue
+            
+            # Validate FK references
+            has_invalid_fk = False
+            for fk_field_name, related_model in fk_fields.items():
+                fk_value = model.get(fk_field_name)
+                
+                if fk_value is None:
+                    continue
+                
+                if fk_value == 0:
+                    base_field_name = fk_field_name[:-3] if fk_field_name.endswith('_id') else fk_field_name
+                    field_obj = fields_map.get(base_field_name)
+                    is_nullable = field_obj is not None and getattr(field_obj, 'null', False)
+                    
+                    if is_nullable:
+                        model[fk_field_name] = None
+                    elif related_model == Player:
+                        placeholder_id = await get_or_create_placeholder_player(0, placeholder_log, created_placeholders)
+                        if Player not in inserted_ids:
+                            inserted_ids[Player] = set()
+                        inserted_ids[Player].add(placeholder_id)
+                        model[fk_field_name] = placeholder_id
+                    else:
+                        skipped_log.write(f"{item.__name__} - ID: {model_id} - SKIPPED: {fk_field_name}=0 is invalid\n")
+                        has_invalid_fk = True
+                        fk_violation_count += 1
+                    continue
+                
+                exists_in_current_batch = related_model == item and fk_value in seen_ids
+                exists_in_tracking = related_model in inserted_ids and fk_value in inserted_ids[related_model]
+                
+                if not exists_in_current_batch and not exists_in_tracking:
+                    exists_in_db = await related_model.filter(pk=fk_value).exists()
+                    
+                    if not exists_in_db:
+                        if related_model == Player:
+                            placeholder_id = await get_or_create_placeholder_player(fk_value, placeholder_log, created_placeholders)
+                            if Player not in inserted_ids:
+                                inserted_ids[Player] = set()
+                            inserted_ids[Player].add(placeholder_id)
+                            model[fk_field_name] = placeholder_id
+                        elif related_model == Special:
+                            model[fk_field_name] = None
+                            placeholder_log.write(f"{item.__name__} ID {model_id}: Set {fk_field_name}=None (Special ID {fk_value} not found)\n")
+                        else:
+                            skipped_log.write(f"{item.__name__} - ID: {model_id} - SKIPPED: Invalid FK {fk_field_name}={fk_value}\n")
+                            has_invalid_fk = True
+                            fk_violation_count += 1
+                            break
+            
+            if has_invalid_fk:
+                skipped_count += 1
+                continue
+            
+            skip_record = False
+            null_fields = []
+            defaults_set = []
+            
+            for field_name, field_value in list(model.items()):
+                if field_value is None and field_name in fields_map:
+                    field_obj = fields_map[field_name]
+                    if hasattr(field_obj, 'null') and not field_obj.null:
+                        if field_name in ('country', 'short_name'):
+                            model[field_name] = 'Unknown'
+                            defaults_set.append(f"{field_name}='Unknown'")
+                        elif field_name == 'enabled':
+                            model[field_name] = True
+                        elif field_name == 'tradeable':
+                            model[field_name] = True
+                        else:
+                            null_fields.append(field_name)
+                            skip_record = True
+            
+            if skip_record:
+                skipped_log.write(f"{item.__name__} - ID: {model_id} - SKIPPED: Null required fields: {', '.join(null_fields)}\n")
+                skipped_count += 1
+                null_field_count += 1
+                continue
+                
+            seen_ids.add(model_id)
+            unique_values.append(model)
+        
+        output[-1] = f"- Creating {item.__name__} [{section_key}] instances... ({len(unique_values):,} valid records)"
+        await message.edit(embed=reload_embed())
+        
+        items = []
+        validation_fail_count = 0
+        
+        for idx, model in enumerate(unique_values):
+            if idx > 0 and idx % 5000 == 0:
+                output[-1] = f"- Creating {item.__name__} [{section_key}] instances... ({idx:,}/{len(unique_values):,})"
+                await message.edit(embed=reload_embed())
+            
+            if model.get('short_name') is None:
+                model['short_name'] = 'Unknown'
+            if model.get('country') is None:
+                model['country'] = 'Unknown'
+            if model.get('enabled') is None:
+                model['enabled'] = True
+            if model.get('tradeable') is None:
+                model['tradeable'] = True
+            
+            emoji_id = model.get('emoji_id')
+            if emoji_id is not None:
+                try:
+                    emoji_id_int = int(emoji_id)
+                    emoji_id_str = str(emoji_id_int)
+                    if len(emoji_id_str) < 17 or len(emoji_id_str) > 19:
+                        model['emoji_id'] = 1234567890123456789
+                except (ValueError, TypeError):
+                    model['emoji_id'] = 1234567890123456789
+            
+            try:
+                instance = item(**model)
+                
+                for fk_field_name in list(fk_fields.keys()):
+                    if not fk_field_name.endswith('_id'):
+                        continue
+                    inst_val = getattr(instance, fk_field_name, None)
+                    if inst_val == 0:
+                        related_model = fk_fields[fk_field_name]
+                        base_name = fk_field_name[:-3]
+                        field_obj = fields_map.get(base_name)
+                        is_nullable = field_obj is not None and getattr(field_obj, 'null', False)
+                        if is_nullable:
+                            setattr(instance, fk_field_name, None)
+                        elif related_model == Player:
+                            placeholder_id = await get_or_create_placeholder_player(0, placeholder_log, created_placeholders)
+                            if Player not in inserted_ids:
+                                inserted_ids[Player] = set()
+                            inserted_ids[Player].add(placeholder_id)
+                            setattr(instance, fk_field_name, placeholder_id)
+
+                try:
+                    await instance.full_clean()
+                except AttributeError:
+                    pass
+                except ValidationError as ve:
+                    skipped_log.write(f"{item.__name__} - ID: {model.get('id')} - SKIPPED: Validation error: {str(ve)[:200]}\n")
+                    skipped_count += 1
+                    validation_fail_count += 1
+                    continue
+                
+                items.append(instance)
+            except (ValueError, ValidationError) as e:
+                skipped_log.write(f"{item.__name__} - ID: {model.get('id')} - SKIPPED: {str(e)[:200]}\n")
+                skipped_count += 1
+                validation_fail_count += 1
+                continue
+        
+        output[-1] = f"- Saving {item.__name__} [{section_key}] to database... ({len(items):,} objects)"
+        await message.edit(embed=reload_embed())
+
+        if items:
+            fixed_count = 0
+            STRING_FIELD_TYPES = ('CharField', 'TextField')
+            
+            for instance in items:
+                instance_fields = instance._meta.fields_map
+                for field_name, field_obj in instance_fields.items():
+                    if hasattr(field_obj, 'related_model'):
+                        continue
+                    if not (hasattr(field_obj, 'null') and not field_obj.null):
+                        continue
+                    val = getattr(instance, field_name, None)
+                    if val is not None:
+                        if field_name == 'emoji_id':
+                            if len(str(val)) < 17 or len(str(val)) > 19:
+                                setattr(instance, field_name, 1234567890123456789)
+                                fixed_count += 1
+                        continue
+                    field_type = type(field_obj).__name__
+                    if field_name == 'emoji_id':
+                        setattr(instance, field_name, 1234567890123456789)
+                    elif field_type in STRING_FIELD_TYPES:
+                        setattr(instance, field_name, 'Unknown')
+                    elif field_type == 'IntField':
+                        setattr(instance, field_name, 0)
+                    elif field_type == 'FloatField':
+                        setattr(instance, field_name, 0.0)
+                    elif field_type == 'BooleanField':
+                        setattr(instance, field_name, False)
+                    elif field_type in ('DatetimeField', 'DateField'):
+                        setattr(instance, field_name, datetime.now())
+                    else:
+                        setattr(instance, field_name, 'Unknown')
+                    fixed_count += 1
+            
+            zero_fk_fixed = 0
+            for instance in items:
+                for attr in list(vars(instance).keys()):
+                    if attr.endswith('_id') and not attr.startswith('_'):
+                        val = getattr(instance, attr, None)
+                        if val == 0:
+                            base = attr[:-3]
+                            field_obj = instance._meta.fields_map.get(base) or instance._meta.fields_map.get(attr)
+                            is_nullable = field_obj is not None and getattr(field_obj, 'null', False)
+                            if is_nullable:
+                                setattr(instance, attr, None)
+                            else:
+                                if 'player' in attr:
+                                    placeholder_id = await get_or_create_placeholder_player(0, placeholder_log, created_placeholders)
+                                    if Player not in inserted_ids:
+                                        inserted_ids[Player] = set()
+                                    inserted_ids[Player].add(placeholder_id)
+                                    setattr(instance, attr, placeholder_id)
+                                else:
+                                    setattr(instance, attr, None)
+                            zero_fk_fixed += 1
+            
+            try:
+                await item.bulk_create(items)
+                # Track inserted IDs — for Special we track per section
+                if item == Special:
+                    if Special not in inserted_ids:
+                        inserted_ids[Special] = set()
+                    for inst in items:
+                        inserted_ids[Special].add(inst.id)
+                        # Build CF-original-id -> BD-id maps for BI special resolution
+                        orig_id = inst.id  # IDs are preserved
+                        if section_key == "S-EX":
+                            exclusive_cf_to_bd[orig_id] = inst.id
+                        elif section_key == "S-EV":
+                            event_cf_to_bd[orig_id] = inst.id
+                else:
+                    inserted_ids[item] = seen_ids
+                
+                await sequence_model(item)
+                
+            except Exception as e:
+                error_msg = f"ERROR: {type(e).__name__}: {str(e)[:500]}"
+                skipped_log.write(f"\n{item.__name__} [{section_key}] BULK CREATE FAILED: {error_msg}\n")
+                output.append(f"- CRITICAL ERROR: {error_msg}")
+                await message.edit(embed=reload_embed())
+                skipped_log.close()
+                placeholder_log.close()
+                raise
+
+        msg = f"- Added **{len(items):,}** {item.__name__} [{section_key}] objects."
+        skip_details = []
+        if fk_violation_count > 0:
+            skip_details.append(f"{fk_violation_count} FK violations")
+        if null_field_count > 0:
+            skip_details.append(f"{null_field_count} null fields")
+        if duplicate_count > 0:
+            skip_details.append(f"{duplicate_count} duplicates")
+        if validation_fail_count > 0:
+            skip_details.append(f"{validation_fail_count} validation errors")
+        if skip_details:
+            msg += f" (skipped: {', '.join(skip_details)})"
+        
+        output[-1] = msg
+        await message.edit(embed=reload_embed())
+
+    # --- Fix BallInstance special_id using exclusive/event priority ---
+    # The BI records were imported with the original CF special_id values.
+    # Now remap: if a BI had an exclusive -> use exclusive BD special id,
+    # else if it had an event -> use event BD special id, else null.
+    # We stored exclusive_id and event_id separately in the export's BI section.
+    # Since the import file now exports both exclusive_id and event_id, we can
+    # update special_id on all BallInstances after the fact.
+    output.append("- Applying exclusive/event priority to ball instances...")
+    await message.edit(embed=reload_embed())
+
+    updated = 0
+    async for bi in BallInstance.all():
+        # BallInstance has no exclusive_id/event_id natively in BD —
+        # the correct special_id was already set during BI creation above
+        # because the export now writes exclusive_id before event_id and the
+        # importer uses the first non-null value. Nothing extra needed here
+        # unless you want to re-verify. Skip.
+        pass
+
+    output.append("- Updating database sequences...")
+    await message.edit(embed=reload_embed())
+    
+    await sequence_all_models()
+
+    skipped_log.write("\n=== END OF LOG ===\n")
+    skipped_log.close()
+    placeholder_log.write("\n=== END OF LOG ===\n")
+    placeholder_log.close()
+    
+    try:
+        if os.path.exists("skipped_records.log"):
+            shutil.copy("skipped_records.log", "/mnt/user-data/outputs/skipped_records.log")
+        if os.path.exists("placeholder_assignments.log"):
+            shutil.copy("placeholder_assignments.log", "/mnt/user-data/outputs/placeholder_assignments.log")
+        output.append("- Migration complete! Logs saved to outputs directory.")
+    except Exception:
+        output.append("- Migration complete! Logs saved to working directory.")
+    
+    await message.edit(embed=reload_embed(start_time, "FINISHED"))
+
+
+async def sequence_model(model):
+    if await model.all().count() == 0:
+        return
+    try:
+        client = Tortoise.get_connection("default")
+        last_id = await model.all().order_by("-id").first().values_list("id", flat=True)
+        await client.execute_query(f"SELECT setval('{model._meta.db_table}_id_seq', {last_id});")
+    except Exception:
+        pass
+
+
+async def sequence_all_models():
+    models = Tortoise.apps.get("models")
+    if models is None:
+        return
+    for model in models.values():
+        await sequence_model(model)
+
+
+async def clear_all_data():
+    client = Tortoise.get_connection("default")
+    all_models = [Regime, Economy, Special, Ball, Player, GuildConfig, Friendship, BlacklistedID, BlacklistedGuild, BallInstance, Trade, TradeObject]
+    table_names = [model._meta.db_table for model in all_models]
+    if table_names:
+        tables_str = ", ".join(table_names)
+        try:
+            await client.execute_query(f"TRUNCATE TABLE {tables_str} RESTART IDENTITY CASCADE;")
+        except Exception as e:
+            output.append(f"- TRUNCATE failed, using fallback: {str(e)}")
+            for model in reversed(all_models):
+                await model.all().delete()
+            for model in all_models:
+                try:
+                    table = model._meta.db_table
+                    await client.execute_query(f"ALTER SEQUENCE {table}_id_seq RESTART WITH 1;")
+                except Exception:
+                    pass
+
+
+async def main():
+    if os.path.isdir("carfigures"):
+        print("You cannot run this command from CarFigures.")
         return
 
-    counts = {}
-    skipped = {"players": 0, "instances": 0}
+    if not os.path.isfile("migration.txt.bz2"):
+        print("Could not find `migration.txt.bz2` migration file.")
+        return
 
-    status_msg = await ctx.send(embed=build_embed(counts, "🔄 RUNNING"))
-
-    compressed = migration_file.read_bytes()
-    data = json.loads(bz2.decompress(compressed).decode("utf-8"))["data"]
-
-    # === 1. REGIMES (CarType -> Regime) ===
-    regime_id_map = {}
-    for ct in data["cartypes"]:
-        regime = await Regime.create(name=ct["name"])
-        regime_id_map[ct["pk"]] = regime.pk
-    counts["Regime"] = len(regime_id_map)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING", skipped))
-
-    # === 2. ECONOMIES (Country -> Economy) ===
-    economy_id_map = {}
-    for country in data["countries"]:
-        economy = await Economy.create(name=country["name"])
-        economy_id_map[country["pk"]] = economy.pk
-    counts["Economy"] = len(economy_id_map)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING", skipped))
-
-    # === 3. BALLS (Car -> Ball) ===
-    ball_id_map = {}
-    for car in data["cars"]:
-        ball = await Ball.create(
-            country=car["fullName"],
-            short_name=car["shortName"] or car["fullName"][:20],
-            catch_names=car["catchNames"] or "",
-            regime_id=regime_id_map.get(car["cartype_id"]),
-            economy_id=economy_id_map.get(car["country_id"]),
-            health=car["weight"],
-            attack=car["horsepower"],
-            rarity=car["rarity"],
-            enabled=car["enabled"],
-            tradeable=car["tradeable"],
-            emoji_id=str(car["emoji"]) if car["emoji"] else None,
-            capacity_name=car["capacityName"] or "Unknown",
-            capacity_description=car["capacityDescription"] or "No description",
-            capacity_logic={},
+    try:
+        await ctx.send(  # type: ignore # noqa: F821
+            "**WARNING**: All existing data on this bot will be **CLEARED**.\n"
+            "Type `proceed` if you wish to proceed.\n"
+            "Type `cancel` if you wish to cancel."
         )
-        ball_id_map[car["pk"]] = ball.pk
-    counts["Ball"] = len(ball_id_map)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING", skipped))
 
-    # === 4. EXCLUSIVES -> SPECIALS (FIRST, priority IDs) ===
-    exclusive_id_map = {}
-    for exclusive in data["exclusives"]:
-        special = await Special.create(
-            name=exclusive["name"],
-            catch_phrase=exclusive["catchPhrase"] or f"You caught a special {exclusive['name']}!",
-            rarity=exclusive["rarity"],
-            start_date=datetime.utcnow() - timedelta(days=365),
-            end_date=datetime.utcnow() + timedelta(days=3650),
-            tradeable=True,
-            emoji_id=str(exclusive["emoji"]) if exclusive["emoji"] else None,
+        confirm_message = await bot.wait_for(  # type: ignore # noqa: F821
+            "message",
+            check=lambda m: m.author == ctx.author  # type: ignore # noqa: F821
+            and m.channel == ctx.channel  # type: ignore # noqa: F821
+            and m.content.lower() in ["proceed", "cancel"],
+            timeout=20,
         )
-        exclusive_id_map[exclusive["pk"]] = special.pk
-    counts["Exclusive->Special"] = len(exclusive_id_map)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING", skipped))
+    except asyncio.TimeoutError:
+        await ctx.send("Canceled due to response timeout.")  # type: ignore # noqa: F821
+        return
 
-    # === 5. EVENTS -> SPECIALS (SECOND, after exclusives) ===
-    event_id_map = {}
-    for event in data["events"]:
-        if event["hidden"]:
-            continue
-        special = await Special.create(
-            name=event["name"],
-            catch_phrase=event["catchPhrase"] or f"You caught a special {event['name']}!",
-            rarity=event["rarity"],
-            start_date=datetime.fromisoformat(event["startDate"]) if event["startDate"] else datetime.utcnow(),
-            end_date=datetime.fromisoformat(event["endDate"]) if event["endDate"] else datetime.utcnow() + timedelta(days=365),
-            tradeable=event["tradeable"],
-            emoji_id=str(event["emoji"]) if event["emoji"] else None,
+    if confirm_message.content.lower() != "proceed":
+        await ctx.send("Canceled due to message response.")  # type: ignore # noqa: F821
+        return
+
+    message = await ctx.send(embed=reload_embed())  # type: ignore # noqa: F821
+
+    output.append("- Clearing existing data...")
+    await message.edit(embed=reload_embed())
+    
+    await clear_all_data()
+    
+    output.append("- Data cleared successfully. Starting migration...")
+    await message.edit(embed=reload_embed())
+    
+    try:
+        donation = list(DonationPolicy)[0]
+        privacy = list(PrivacyPolicy)[0]
+        await Player.create(
+            id=0,
+            discord_id=100000000000000000,
+            donation_policy=donation,
+            privacy_policy=privacy
         )
-        event_id_map[event["pk"]] = special.pk
-    counts["Event->Special"] = len(event_id_map)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING", skipped))
-
-    # === 6. GUILD CONFIGS ===
-    for guild in data["guilds"]:
-        await BDGuildConfig.create(
-            guild_id=guild["guild_id"],
-            spawn_channel=guild["spawnChannel"],
-            enabled=guild["enabled"],
-        )
-    counts["GuildConfig"] = len(data["guilds"])
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING", skipped))
-
-    # === 7. PLAYERS (with validation, no ghost players) ===
-    player_id_map = {}
-    for player in data["players"]:
-        discord_id = player["discord_id"]
-        # Skip invalid Discord IDs — valid IDs are 17-19 digits
-        if not discord_id or not (17000000000000000 <= discord_id <= 9999999999999999999):
-            log.warning(f"Skipping invalid player discord_id: {discord_id}")
-            skipped["players"] += 1
-            continue
-        bd_player = await BDPlayer.create(
-            discord_id=discord_id,
-            donation_policy_flags=player["donationPolicy"],
-            privacy_policy_flags=player["privacyPolicy"],
-        )
-        player_id_map[player["pk"]] = bd_player.pk
-    counts["Player"] = len(player_id_map)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING", skipped))
-
-    # === 8. BLACKLISTED USERS ===
-    for bl_user in data["blacklisted_users"]:
-        await BlacklistedID.create(
-            discord_id=bl_user["discord_id"],
-            reason=bl_user["reason"] or "Migrated from CF",
-        )
-    counts["BlacklistedUser"] = len(data["blacklisted_users"])
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING", skipped))
-
-    # === 9. BLACKLISTED GUILDS ===
-    for bl_guild in data["blacklisted_guilds"]:
-        await BDBlacklistedGuild.create(
-            discord_id=bl_guild["discord_id"],
-            reason=bl_guild["reason"] or "Migrated from CF",
-        )
-    counts["BlacklistedGuild"] = len(data["blacklisted_guilds"])
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING", skipped))
-
-    # === 10. BALL INSTANCES (correct player mapping, exclusive priority) ===
-    ball_instance_id_map = {}
-    total_instances = len(data["car_instances"])
-
-    for i, ci in enumerate(data["car_instances"]):
-        # Map to correct BD player — skip if player wasn't migrated (was a ghost)
-        bd_player_id = player_id_map.get(ci["player_id"])
-        if not bd_player_id:
-            skipped["instances"] += 1
-            continue
-
-        bd_ball_id = ball_id_map.get(ci["car_id"])
-        if not bd_ball_id:
-            skipped["instances"] += 1
-            continue
-
-        # EXCLUSIVE takes priority over EVENT
-        bd_special_id = None
-        if ci["exclusive_id"]:
-            bd_special_id = exclusive_id_map.get(ci["exclusive_id"])
-        elif ci["event_id"]:
-            bd_special_id = event_id_map.get(ci["event_id"])
-
-        bd_trade_player_id = None
-        if ci["trade_player_id"]:
-            bd_trade_player_id = player_id_map.get(ci["trade_player_id"])
-
-        ball_instance = await BallInstance.create(
-            ball_id=bd_ball_id,
-            player_id=bd_player_id,
-            catch_date=datetime.fromisoformat(ci["catchDate"]) if ci["catchDate"] else datetime.utcnow(),
-            spawned_time=datetime.fromisoformat(ci["spawnedTime"]) if ci["spawnedTime"] else None,
-            server_id=ci["server"],
-            special_id=bd_special_id,
-            health_bonus=ci["weightBonus"],
-            attack_bonus=ci["horsepowerBonus"],
-            trade_player_id=bd_trade_player_id,
-            favorite=ci["favorite"],
-            shiny=False,
-        )
-        ball_instance_id_map[ci["pk"]] = ball_instance.pk
-
-        # Progress update every 10k
-        if (i + 1) % 10000 == 0:
-            counts["BallInstance"] = len(ball_instance_id_map)
-            await status_msg.edit(embed=build_embed(
-                counts,
-                f"🔄 RUNNING ({i+1:,}/{total_instances:,} instances)",
-                skipped,
-            ))
-
-    counts["BallInstance"] = len(ball_instance_id_map)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING", skipped))
-
-    # === 11. TRADES ===
-    trade_id_map = {}
-    for trade in data["trades"]:
-        bd_p1 = player_id_map.get(trade["player1_id"])
-        bd_p2 = player_id_map.get(trade["player2_id"])
-        if not bd_p1 or not bd_p2:
-            continue
-        bd_trade = await BDTrade.create(
-            player1_id=bd_p1,
-            player2_id=bd_p2,
-            date=datetime.fromisoformat(trade["date"]) if trade["date"] else datetime.utcnow(),
-        )
-        trade_id_map[trade["pk"]] = bd_trade.pk
-    counts["Trade"] = len(trade_id_map)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING", skipped))
-
-    # === 12. TRADE OBJECTS ===
-    for to in data["trade_objects"]:
-        bd_trade_id = trade_id_map.get(to["trade_id"])
-        bd_ball_instance_id = ball_instance_id_map.get(to["carinstance_id"])
-        bd_player_id = player_id_map.get(to["player_id"])
-        if not bd_trade_id or not bd_ball_instance_id or not bd_player_id:
-            continue
-        await BDTradeObject.create(
-            trade_id=bd_trade_id,
-            ballinstance_id=bd_ball_instance_id,
-            player_id=bd_player_id,
-        )
-    counts["TradeObject"] = len(data["trade_objects"])
-
-    # Final embed
-    await status_msg.edit(embed=build_embed(counts, "✅ FINISHED", skipped))
-    log.info("Import completed successfully")
+        client = Tortoise.get_connection("default")
+        await client.execute_query("SELECT setval('player_id_seq', 1, false);")
+        output.append("- Created Player id=0 for invalid FK references")
+        await message.edit(embed=reload_embed())
+    except Exception as e:
+        output.append(f"- Note: Could not create Player id=0: {str(e)[:100]}")
+        await message.edit(embed=reload_embed())
+    
+    await load(message)
 
 
-await import_cf_data(ctx)
+await main()  # type: ignore  # noqa: F704

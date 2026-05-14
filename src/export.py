@@ -1,243 +1,313 @@
-"""
-CF-Migrator v3 - Export Script
-Exports CarFigures database to a compressed file for migration to BallsDex
-"""
-
 import bz2
-import json
-import logging
-from datetime import datetime
-from pathlib import Path
+import os
+import time
+import traceback
+from typing import Any
 
 import discord
+from carfigures.core.models import (
+    BlacklistedGuild,
+    BlacklistedUser,
+    Car,
+    CarInstance,
+    CarType,
+    Country,
+    Event,
+    Exclusive,
+    Friendship,
+    GuildConfig,
+    Player,
+    Trade,
+    TradeObject,
+)
 
-log = logging.getLogger("carfigures.migration")
+__version__ = "1.0.1"
+
+MIGRATIONS: dict[str, dict[str, Any]] = {
+    "R": {
+        "model": CarType,
+        "process": "CarType",
+        "values": [
+            "name",
+            "image",
+        ],
+    },
+    "E": {
+        "model": Country,
+        "process": "Country",
+        "values": [
+            "name",
+            "image",
+        ],
+    },
+    "S-EX": {
+        "model": Exclusive,
+        "process": "Exclusive",
+        "values": [
+            "name",
+            "image",
+            "rarity",
+        ],
+        "defaults": {
+            "catchPhrase": None,
+            "emoji": None,
+        },
+    },
+    "S-EV": {
+        "model": Event,
+        "process": "Event",
+        "values": [
+            "name",
+            "rarity",
+            "card",
+        ],
+        "defaults": {
+            "catchPhrase": None,
+            "startDate": None,
+            "endDate": None,
+            "emoji": None,
+            "tradeable": True,
+            "hidden": False,
+        },
+    },
+    "B": {
+        "model": Car,
+        "process": "Car",
+        "values": [
+            "cartype_id",
+            "fullName",
+            "weight",
+            "horsepower",
+            "rarity",
+            "emoji",
+            "collectionPicture",
+            "carCredits",
+            "capacityName",
+            "capacityDescription",
+            "createdAt",
+        ],
+        "defaults": {
+            "country_id": None,
+            "shortName": None,
+            "catchNames": None,
+            "enabled": True,
+            "tradeable": True,
+            "spawnPicture": None,
+        },
+    },
+    "P": {
+        "model": Player,
+        "process": "Player",
+        "values": ["discord_id"],
+        "defaults": {"donationPolicy": 1, "privacyPolicy": 1},
+    },
+    "BI": {
+        "model": CarInstance,
+        "process": "CarInstance",
+        "values": [
+            "car_id",
+            "player_id",
+            "catchDate",
+            "spawnedTime",
+            "server",
+            "exclusive_id",
+            "event_id",
+        ],
+        "defaults": {
+            "trade_player_id": None,
+            "favorite": False,
+            "tradeable": True,
+            "weightBonus": 0,
+            "horsepowerBonus": 0,
+        },
+    },
+    "GC": {
+        "model": GuildConfig,
+        "process": "GuildConfig",
+        "values": ["guild_id"],
+        "defaults": {"spawnChannel": None, "enabled": True},
+    },
+    "F": {
+        "model": Friendship,
+        "process": "Friendship",
+        "values": ["friender_id", "friended_id", "since"],
+    },
+    "BU": {
+        "model": BlacklistedUser,
+        "process": "BlacklistedUser",
+        "values": ["discord_id"],
+        "defaults": {"reason": None, "date": None},
+    },
+    "BG": {
+        "model": BlacklistedGuild,
+        "process": "BlacklistedGuild",
+        "values": ["discord_id"],
+        "defaults": {"reason": None, "date": None},
+    },
+    "T": {"model": Trade, "process": "Trade", "values": ["player1_id", "player2_id", "date"]},
+    "TO": {
+        "model": TradeObject,
+        "process": "TradeObject",
+        "values": ["trade_id", "carinstance_id", "player_id"],
+    },
+}
 
 
-def build_embed(counts: dict, status: str, file_path: str = None, size_mb: float = None) -> discord.Embed:
+output = []
+
+
+def reload_embed(start_time: float | None = None, file: str | None = None, status="RUNNING"):
     embed = discord.Embed(
         title="CF-Migrator Process",
-        color=0x00FF00,  # Green
+        description=f"Status: **{status}**",
     )
-    embed.add_field(name="Status", value=f"**{status}**", inline=False)
 
-    if counts:
-        output_lines = []
-        labels = {
-            "CarType":      "CarType objects",
-            "Country":      "Country objects",
-            "Event":        "Event objects",
-            "Exclusive":    "Exclusive objects",
-            "Car":          "Car objects",
-            "Player":       "Player objects",
-            "CarInstance":  "CarInstance objects",
-            "GuildConfig":  "GuildConfig objects",
-            "Friendship":   "Friendship objects",
-            "BlacklistedUser":  "BlacklistedUser objects",
-            "BlacklistedGuild": "BlacklistedGuild objects",
-            "Trade":        "Trade objects",
-            "TradeObject":  "TradeObject objects",
-        }
-        for key, label in labels.items():
-            if key in counts:
-                output_lines.append(f"- Migrated **{counts[key]:,}** {label}.")
-        if output_lines:
-            embed.add_field(name="Output", value="\n".join(output_lines), inline=False)
+    match status:
+        case "RUNNING":
+            embed.color = discord.Color.yellow()
+        case "FINISHED":
+            embed.color = discord.Color.green()
+        case "CANCELED":
+            embed.color = discord.Color.red()
 
-    if file_path and size_mb is not None:
+    if len(output) > 0:
+        embed.add_field(name="Output", value="\n".join(output))
+
+    if file:
         embed.add_field(
             name="File",
-            value=f"Saved to `{file_path}` ({size_mb:.2f} MB)",
+            value=f"Saved to `/{file}` ({convert_size(os.path.getsize(file))})",
             inline=False,
         )
+
+    if start_time is not None:
+        embed.set_footer(text=f"Ended migration in {round((time.time() - start_time), 3)}s")
 
     return embed
 
 
-async def export_cf_data(ctx):
-    from carfigures.core.models import (
-        CarType, Country, Event, Exclusive, Car,
-        Player, CarInstance, GuildConfig, Friendship,
-        BlacklistedUser, BlacklistedGuild, Trade, TradeObject,
+def convert_size(bytes: int) -> str:
+    if bytes < 1024:
+        return f"{bytes} bytes"
+
+    if bytes < (1024**2):
+        return f"{bytes / 1024:.2f} KB"
+
+    if bytes < (1024**3):
+        return f"{bytes / (1024 ** 2):.2f} MB"
+
+    return f"{bytes / (1024 ** 3):.2f} GB"
+
+
+async def process(entry: str, migration) -> str:
+    content = []
+
+    first_instance = True
+    values = set(migration["values"] + ["id"])
+    has_defaults = "defaults" in migration
+
+    if has_defaults:
+        values.update(list(migration["defaults"].keys()))
+
+    values = sorted(values, key=lambda x: (x != "id", x))
+
+    async for model in migration["model"].all().order_by("id").values_list(*values):
+        model_dict = dict(zip(values, model))
+        fields = []
+
+        for key, value in model_dict.items():
+            if (
+                has_defaults
+                and key in migration["defaults"]
+                and value == migration["defaults"][key]
+            ):
+                fields.append("")
+                continue
+
+            value_string = str(value)
+
+            if value_string == "True":
+                value_string = "🬀"
+            elif value_string == "False":
+                value_string = "🬁"
+
+            if value_string.startswith("/static/uploads/"):
+                value_string = value_string.replace("/static/uploads/", "", 1)
+            elif value_string.startswith("/carfigures/core/image_generator/src/"):
+                value_string = value_string.replace("/carfigures/core/image_generator/src/", "", 1)
+
+            fields.append(value_string.replace("\n", "🮈"))
+
+        if first_instance:
+            content.append(f":{entry}")
+            first_instance = False
+
+        content.append("╵".join(fields))
+
+    output.append(
+        f"- Migrated **{await migration['model'].all().count():,}** {migration['process']} objects."
     )
 
-    counts = {}
-    embed = build_embed(counts, "🔄 RUNNING")
-    status_msg = await ctx.send(embed=embed)
+    return "\n".join(content)
 
-    data = {
-        "export_date": datetime.utcnow().isoformat(),
-        "version": "2.0",
-        "data": {}
-    }
 
-    # 1. CarTypes
-    cartypes = await CarType.all()
-    data["data"]["cartypes"] = [
-        {"pk": ct.pk, "name": ct.name, "image": ct.image,
-         "rebirthRequired": ct.rebirthRequired, "fontsPack_id": ct.fontsPack_id}
-        for ct in cartypes
-    ]
-    counts["CarType"] = len(cartypes)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING"))
+async def migrate(message, filename: str) -> str | None:
+    with bz2.open(f"{filename}.bz2", "wt", encoding="utf-8") as f:
+        content = [
+            f"// Generated with 'CF-Migrator' v{__version__}\n"
+            "// Please do not modify this file unless you know what you're doing.\n\n"
+        ]
 
-    # 2. Countries
-    countries = await Country.all()
-    data["data"]["countries"] = [
-        {"pk": c.pk, "name": c.name, "image": c.image}
-        for c in countries
-    ]
-    counts["Country"] = len(countries)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING"))
+        error_occured = False
 
-    # 3. Events
-    events = await Event.all()
-    data["data"]["events"] = [
-        {"pk": e.pk, "name": e.name, "description": e.description,
-         "catchPhrase": e.catchPhrase,
-         "startDate": e.startDate.isoformat() if e.startDate else None,
-         "endDate": e.endDate.isoformat() if e.endDate else None,
-         "rarity": e.rarity, "emoji": e.emoji,
-         "tradeable": e.tradeable, "hidden": e.hidden}
-        for e in events
-    ]
-    counts["Event"] = len(events)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING"))
+        for key, migration in MIGRATIONS.items():
+            try:
+                field = await process(key, migration)
+            except Exception:
+                print(f"An error occured:\n{traceback.format_exc()}")
+                error_occured = True
+                break
 
-    # 4. Exclusives
-    exclusives = await Exclusive.all()
-    data["data"]["exclusives"] = [
-        {"pk": ex.pk, "name": ex.name, "image": ex.image,
-         "rarity": ex.rarity, "emoji": ex.emoji,
-         "catchPhrase": ex.catchPhrase, "rebirthRequired": ex.rebirthRequired}
-        for ex in exclusives
-    ]
-    counts["Exclusive"] = len(exclusives)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING"))
+            content.append(field)
 
-    # 5. Cars
-    cars = await Car.all()
-    data["data"]["cars"] = [
-        {"pk": c.pk, "fullName": c.fullName, "shortName": c.shortName,
-         "catchNames": c.catchNames, "cartype_id": c.cartype_id,
-         "country_id": c.country_id, "weight": c.weight,
-         "horsepower": c.horsepower, "rarity": c.rarity,
-         "enabled": c.enabled, "tradeable": c.tradeable,
-         "emoji": c.emoji, "capacityName": c.capacityName,
-         "capacityDescription": c.capacityDescription, "carCredits": c.carCredits}
-        for c in cars
-    ]
-    counts["Car"] = len(cars)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING"))
+            await message.edit(embed=reload_embed())
 
-    # 6. Players
-    players = await Player.all()
-    data["data"]["players"] = [
-        {"pk": p.pk, "discord_id": p.discord_id,
-         "donationPolicy": p.donationPolicy, "privacyPolicy": p.privacyPolicy,
-         "bolts": p.bolts, "rebirths": p.rebirths}
-        for p in players
-    ]
-    counts["Player"] = len(players)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING"))
+        if error_occured:
+            return
 
-    # 7. CarInstances
-    car_instances = await CarInstance.all()
-    data["data"]["car_instances"] = [
-        {"pk": ci.pk, "car_id": ci.car_id, "player_id": ci.player_id,
-         "catchDate": ci.catchDate.isoformat() if ci.catchDate else None,
-         "spawnedTime": ci.spawnedTime.isoformat() if ci.spawnedTime else None,
-         "server": ci.server, "exclusive_id": ci.exclusive_id,
-         "event_id": ci.event_id, "weightBonus": ci.weightBonus,
-         "horsepowerBonus": ci.horsepowerBonus,
-         "trade_player_id": ci.trade_player_id,
-         "favorite": ci.favorite, "tradeable": ci.tradeable}
-        for ci in car_instances
-    ]
-    counts["CarInstance"] = len(car_instances)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING"))
+        f.write("\n".join(content))
 
-    # 8. GuildConfigs
-    guilds = await GuildConfig.all()
-    data["data"]["guilds"] = [
-        {"guild_id": g.guild_id, "spawnChannel": g.spawnChannel,
-         "spawnRole": g.spawnRole, "enabled": g.enabled}
-        for g in guilds
-    ]
-    counts["GuildConfig"] = len(guilds)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING"))
+    return f"{filename}.bz2"
 
-    # 9. Friendships
-    friendships = await Friendship.all()
-    data["data"]["friendships"] = [
-        {"pk": f.pk, "friender_id": f.friender_id,
-         "friended_id": f.friended_id, "bestie": f.bestie,
-         "since": f.since.isoformat() if f.since else None}
-        for f in friendships
-    ]
-    counts["Friendship"] = len(friendships)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING"))
 
-    # 10. Blacklisted Users
-    bl_users = await BlacklistedUser.all()
-    data["data"]["blacklisted_users"] = [
-        {"discord_id": bu.discord_id, "reason": bu.reason,
-         "date": bu.date.isoformat() if bu.date else None}
-        for bu in bl_users
-    ]
-    counts["BlacklistedUser"] = len(bl_users)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING"))
+async def main():
+    if os.path.isdir("ballsdex"):
+        print("You cannot run this command from Ballsdex.")
+        return
 
-    # 11. Blacklisted Guilds
-    bl_guilds = await BlacklistedGuild.all()
-    data["data"]["blacklisted_guilds"] = [
-        {"discord_id": bg.discord_id, "reason": bg.reason,
-         "date": bg.date.isoformat() if bg.date else None}
-        for bg in bl_guilds
-    ]
-    counts["BlacklistedGuild"] = len(bl_guilds)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING"))
+    message = await ctx.send(embed=reload_embed())  # type: ignore # noqa: F821
 
-    # 12. Trades
-    trades = await Trade.all()
-    data["data"]["trades"] = [
-        {"pk": t.pk, "player1_id": t.player1_id,
-         "player2_id": t.player2_id,
-         "date": t.date.isoformat() if t.date else None}
-        for t in trades
-    ]
-    counts["Trade"] = len(trades)
-    await status_msg.edit(embed=build_embed(counts, "🔄 RUNNING"))
+    start_time = time.time()
 
-    # 13. TradeObjects
-    trade_objects = await TradeObject.all()
-    data["data"]["trade_objects"] = [
-        {"trade_id": to.trade_id, "carinstance_id": to.carinstance_id,
-         "player_id": to.player_id}
-        for to in trade_objects
-    ]
-    counts["TradeObject"] = len(trade_objects)
+    path = await migrate(message, "migration.txt")
 
-    # Compress and save
-    json_bytes = json.dumps(data, indent=2).encode("utf-8")
-    compressed = bz2.compress(json_bytes)
-    output_file = Path("/migration_export.json.bz2")
-    output_file.write_bytes(compressed)
-    size_mb = len(compressed) / (1024 * 1024)
+    if path is None:
+        await message.edit(embed=reload_embed(start_time, status="CANCELED"))
+        return
 
-    # Final embed
-    await status_msg.edit(embed=build_embed(counts, "✅ FINISHED", str(output_file), size_mb))
+    await message.edit(embed=reload_embed(start_time, path, "FINISHED"))
 
-    # Upload file to Discord
+    # Send file to Discord so it can be downloaded and dropped into the BallsDex folder
     try:
-        if size_mb < 25:
-            await ctx.send(file=discord.File(str(output_file)))
-        else:
-            await ctx.send(f"⚠️ File too large to upload ({size_mb:.2f} MB). Download from server at `{output_file}`")
-    except Exception as e:
-        await ctx.send(f"⚠️ Could not upload file: {e}\nDownload from server at `{output_file}`")
+        await ctx.send(  # type: ignore # noqa: F821
+            "📦 **Migration file — drag this into your BallsDex bot folder:**",
+            file=discord.File(path),
+        )
+    except discord.HTTPException:
+        size = convert_size(os.path.getsize(path))
+        await ctx.send(  # type: ignore # noqa: F821
+            f"⚠️ File too large to upload ({size}). Copy `/{path}` manually to your BallsDex folder."
+        )
 
-    log.info(f"Export completed: {output_file} ({size_mb:.2f} MB)")
 
-
-await export_cf_data(ctx)
+await main()  # type: ignore  # noqa: F704
