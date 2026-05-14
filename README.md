@@ -15,7 +15,7 @@ You can export a new migration file by executing the following eval command on y
 ```py
 import base64, requests
 
-request = requests.get("https://api.github.com/repos/ItsMeFuture/CF-Migrator-v2/contents/src/export.py")
+request = requests.get("https://api.github.com/repos/GlitchedGlitch/CF-Migrator-v3/contents/src/export.py")
 
 await ctx.invoke(
     bot.get_command("eval"),
@@ -34,7 +34,7 @@ You can import data from your migration file by running the following eval comma
 ```py
 import base64, requests
 
-request = requests.get("https://api.github.com/repos/ItsMeFuture/CF-Migrator-v2/contents/src/import.py")
+request = requests.get("https://api.github.com/repos/GlitchedGlitch/CF-Migrator-v3/contents/src/import.py")
 
 await ctx.invoke(
     bot.get_command("eval"),
