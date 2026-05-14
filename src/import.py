@@ -6,6 +6,7 @@ Imports CarFigures database export into BallsDex
 import bz2
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -70,7 +71,7 @@ async def import_cf_data(ctx):
         TradeObject as BDTradeObject,
     )
 
-    migration_file = Path("/migration_export.json")
+    migration_file = os.path.isfile("/migration_export.json")
     if not migration_file.exists():
         await ctx.send("❌ **Migration file not found!** Please run export first and upload the file.")
         return
