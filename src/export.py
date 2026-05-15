@@ -112,13 +112,13 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
             "server",
             "exclusive_id",
             "event_id",
+            "weightBonus",
+            "horsepowerBonus",
         ],
         "defaults": {
             "trade_player_id": None,
             "favorite": False,
             "tradeable": True,
-            "weightBonus": 0,
-            "horsepowerBonus": 0,
         },
     },
     "GC": {
@@ -300,13 +300,13 @@ async def main():
     # Send file to Discord so it can be downloaded and dropped into the BallsDex folder
     try:
         await ctx.send(  # type: ignore # noqa: F821
-            "📦 **Migration file — drag this into your BallsDex bot folder:**",
+            "**Migration file — drag this into your BallsDex bot folder:**",
             file=discord.File(path),
         )
     except discord.HTTPException:
         size = convert_size(os.path.getsize(path))
         await ctx.send(  # type: ignore # noqa: F821
-            f"⚠️ File too large to upload ({size}). Copy `/{path}` manually to your BallsDex folder."
+            f"File too large to upload ({size}). Copy `/{path}` manually to your BallsDex folder."
         )
 
 
