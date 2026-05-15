@@ -75,17 +75,39 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
         "process": "Car",
         "values": [
             "cartype_id",
+            "country_id",
             "fullName",
+            "shortName",
+            "catchNames",
             "weight",
             "horsepower",
             "rarity",
             "emoji",
+            "spawnPicture",
             "collectionPicture",
             "carCredits",
             "capacityName",
             "capacityDescription",
             "createdAt",
+            "enabled",
+            "tradeable",
         ],
+        "rename": {
+            "cartype_id": "regime_id",
+            "country_id": "economy_id",
+            "fullName": "country",
+            "shortName": "short_name",
+            "catchNames": "catch_names",
+            "weight": "health",
+            "horsepower": "attack",
+            "emoji": "emoji_id",
+            "spawnPicture": "wild_card",
+            "collectionPicture": "collection_card",
+            "carCredits": "credits",
+            "capacityName": "capacity_name",
+            "capacityDescription": "capacity_description",
+            "createdAt": "created_at",
+        },
         "defaults": {
             "country_id": None,
             "shortName": None,
@@ -114,7 +136,18 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
             "event_id",
             "weightBonus",
             "horsepowerBonus",
+            "favorite",
+            "tradeable",
+            "trade_player_id",
         ],
+        "rename": {
+            "car_id": "ball_id",
+            "catchDate": "catch_date",
+            "spawnedTime": "spawned_time",
+            "server": "server_id",
+            "weightBonus": "health_bonus",
+            "horsepowerBonus": "attack_bonus",
+        },
         "defaults": {
             "trade_player_id": None,
             "favorite": False,
@@ -205,6 +238,7 @@ async def process(entry: str, migration) -> str:
     first_instance = True
     values = set(migration["values"] + ["id"])
     has_defaults = "defaults" in migration
+    rename = migration.get("rename", {})
 
     if has_defaults:
         values.update(list(migration["defaults"].keys()))
@@ -240,6 +274,9 @@ async def process(entry: str, migration) -> str:
 
         if first_instance:
             content.append(f":{entry}")
+            # Write renamed field order as a comment so the importer knows the column names
+            renamed_values = [rename.get(v, v) for v in values]
+            content.append(f"#fields:{'╵'.join(renamed_values)}")
             first_instance = False
 
         content.append("╵".join(fields))
@@ -300,13 +337,13 @@ async def main():
     # Send file to Discord so it can be downloaded and dropped into the BallsDex folder
     try:
         await ctx.send(  # type: ignore # noqa: F821
-            "**Migration file — drag this into your BallsDex bot folder:**",
+            "📦 **Migration file — drag this into your BallsDex bot folder:**",
             file=discord.File(path),
         )
     except discord.HTTPException:
         size = convert_size(os.path.getsize(path))
         await ctx.send(  # type: ignore # noqa: F821
-            f"File too large to upload ({size}). Copy `/{path}` manually to your BallsDex folder."
+            f"⚠️ File too large to upload ({size}). Copy `/{path}` manually to your BallsDex folder."
         )
 
 
