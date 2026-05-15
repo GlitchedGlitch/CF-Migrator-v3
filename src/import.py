@@ -70,8 +70,8 @@ def safe_date(value):
 # ----------- ChatGPT Ends Here -------------
 
 SECTIONS = {
-    "R": [Regime, ["id", "background", "name"]],
-    "E": [Economy, ["id", "icon", "name"]],
+    "R": [Regime, ["id", "name", "background"]],
+    "E": [Economy, ["id", "name", "icon"]],
     "S-EX": [Special, ["id", "catch_phrase", "emoji", "background", "name", "rarity"]],
     "S-EV": [Special, ["id", "background", "catch_phrase", "emoji", "end_date", "hidden", "name", "rarity", "start_date", "tradeable"]],
     "B": [Ball, None],   # columns read dynamically from #fields line
