@@ -153,6 +153,9 @@ async def load(message):
     exclusive_cf_to_bd: dict[int, int] = {}
     # Maps CF event pk -> BD Special pk (set during S-EV processing)
     event_cf_to_bd: dict[int, int] = {}
+    # Sequential counter for Special IDs shared across S-EX and S-EV
+    # so exclusives get 1,2,3... and events continue from there
+    special_counter = [1]  # list so nested code can mutate it
 
     skipped_log = open("skipped_records.log", "w", encoding="utf-8")
     skipped_log.write("=== MIGRATION SKIPPED RECORDS LOG ===\n")
@@ -396,6 +399,18 @@ async def load(message):
                 continue
                 
             seen_ids.add(model_id)
+
+            # For specials, replace the original CF ID with the next sequential counter
+            # value so S-EX and S-EV never collide in the Special table
+            if item == Special:
+                new_id = special_counter[0]
+                special_counter[0] += 1
+                if section_key == "S-EX":
+                    exclusive_cf_to_bd[model_id] = new_id
+                elif section_key == "S-EV":
+                    event_cf_to_bd[model_id] = new_id
+                model['id'] = new_id
+
             unique_values.append(model)
         
         output[-1] = f"- Creating {item.__name__} [{section_key}] instances... ({len(unique_values):,} valid records)"
@@ -528,18 +543,11 @@ async def load(message):
             
             try:
                 await item.bulk_create(items)
-                # Track inserted IDs — for Special we track per section
                 if item == Special:
                     if Special not in inserted_ids:
                         inserted_ids[Special] = set()
                     for inst in items:
                         inserted_ids[Special].add(inst.id)
-                        # Build CF-original-id -> BD-id maps for BI special resolution
-                        orig_id = inst.id  # IDs are preserved
-                        if section_key == "S-EX":
-                            exclusive_cf_to_bd[orig_id] = inst.id
-                        elif section_key == "S-EV":
-                            event_cf_to_bd[orig_id] = inst.id
                 else:
                     inserted_ids[item] = seen_ids
                 
@@ -690,23 +698,6 @@ async def main():
     
     output.append("- Data cleared successfully. Starting migration...")
     await message.edit(embed=reload_embed())
-    
-    try:
-        donation = list(DonationPolicy)[0]
-        privacy = list(PrivacyPolicy)[0]
-        await Player.create(
-            id=0,
-            discord_id=100000000000000000,
-            donation_policy=donation,
-            privacy_policy=privacy
-        )
-        client = Tortoise.get_connection("default")
-        await client.execute_query("SELECT setval('player_id_seq', 1, false);")
-        output.append("- Created Player id=0 for invalid FK references")
-        await message.edit(embed=reload_embed())
-    except Exception as e:
-        output.append(f"- Note: Could not create Player id=0: {str(e)[:100]}")
-        await message.edit(embed=reload_embed())
     
     await load(message)
 
