@@ -75,7 +75,7 @@ SECTIONS = {
     "S-EX": [Special, ["id", "catch_phrase", "emoji", "background", "name", "rarity"]],
     "S-EV": [Special, ["id", "background", "catch_phrase", "emoji", "end_date", "hidden", "name", "rarity", "start_date", "tradeable"]],
     "B": [Ball, ["id", "regime_id", "economy_id", "country", "short_name", "catch_names", "health", "attack", "rarity", "emoji_id", "wild_card", "collection_card", "credits", "capacity_name", "capacity_description", "enabled", "tradeable"]],
-    "BI": [BallInstance, ["id", "ball_id", "catch_date", "exclusive_id", "event_id", "favorite", "attack_bonus", "player_id", "server_id", "spawned_time", "trade_player_id", "tradeable", "health_bonus"]],
+    "BI": [BallInstance, ["id", "ball_id", "catch_date", "special_id", "favorite", "attack_bonus", "player_id", "server_id", "spawned_time", "trade_player_id", "tradeable", "health_bonus"]],
     "P": [Player, ["id", "discord_id", "donation_policy", "privacy_policy"]],
     "GC": [GuildConfig, ["id", "enabled", "guild_id", "spawn_channel"]],
     "F": [Friendship, ["id", "player1_id", "player2_id", "since"]],
@@ -252,19 +252,6 @@ async def load(message):
 
         if model_dict is not None:
             model_dict['_section'] = section
-
-            # For BallInstance: convert exclusive_id + event_id -> special_id
-            # exclusive takes priority over event
-            if section == "BI":
-                exclusive_id = model_dict.pop("exclusive_id", None)
-                event_id = model_dict.pop("event_id", None)
-                if exclusive_id and exclusive_id in exclusive_cf_to_bd:
-                    model_dict["special_id"] = exclusive_cf_to_bd[exclusive_id]
-                elif event_id and event_id in event_cf_to_bd:
-                    model_dict["special_id"] = event_cf_to_bd[event_id]
-                else:
-                    model_dict["special_id"] = None
-
             data[bucket_key].append(model_dict)
 
     output.append(f"- Finished reading migration file. Processing models...")
