@@ -49,6 +49,7 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
             "emoji",
         ],
         "rename": {
+            "image": "background",
             "catchPhrase": "catch_phrase",
         },
         "defaults": {
@@ -71,6 +72,7 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
             "hidden",
         ],
         "rename": {
+            "card": "background",
             "catchPhrase": "catch_phrase",
             "startDate": "start_date",
             "endDate": "end_date",
@@ -351,13 +353,13 @@ async def main():
     # Send file to Discord so it can be downloaded and dropped into the BallsDex folder
     try:
         await ctx.send(  # type: ignore # noqa: F821
-            "📦 **Migration file — drag this into your BallsDex bot folder:**",
+            "Migration file — drag this into your BallsDex bot folder:",
             file=discord.File(path),
         )
     except discord.HTTPException:
         size = convert_size(os.path.getsize(path))
         await ctx.send(  # type: ignore # noqa: F821
-            f"⚠️ File too large to upload ({size}). Copy `/{path}` manually to your BallsDex folder."
+            f"File too large to upload ({size}). Copy `/{path}` manually to your BallsDex folder."
         )
 
 
