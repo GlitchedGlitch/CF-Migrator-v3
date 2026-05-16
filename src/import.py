@@ -3,6 +3,7 @@ import bz2
 import os
 import shutil
 import time
+from collections import defaultdict
 from datetime import datetime, date
 
 import discord
@@ -26,7 +27,7 @@ from ballsdex.core.models import (
 )
 from ballsdex.core.models import DonationPolicy, PrivacyPolicy
 
-__version__ = "1.0.3-cleaned"
+__version__ = "1.0.4-detailed-logging"
 
 
 # ----------- ChatGPT Starts Here -------------
@@ -46,13 +47,16 @@ def safe_datetime(value):
 
     try:
         f = float(value)
+
         if 0 <= f <= 4_102_444_800:
             return datetime.fromtimestamp(f)
+
     except (TypeError, ValueError, OSError):
         pass
 
     try:
         return datetime.fromisoformat(str(value))
+
     except (ValueError, TypeError):
         return None
 
@@ -79,6 +83,7 @@ def safe_date(value):
 
     try:
         return date.fromisoformat(str(value))
+
     except (ValueError, TypeError):
         return None
 
@@ -86,11 +91,16 @@ def safe_date(value):
 def safe_float(value):
     try:
         return float(value)
+
     except (TypeError, ValueError):
         return None
 
 
-def resolve_special_id(model_dict, exclusive_cf_to_bd, event_cf_to_bd):
+def resolve_special_id(
+    model_dict,
+    exclusive_cf_to_bd,
+    event_cf_to_bd,
+):
     """
     Prefer exclusive special over event special.
     Exporter may provide:
@@ -104,12 +114,14 @@ def resolve_special_id(model_dict, exclusive_cf_to_bd, event_cf_to_bd):
 
     if exclusive_id is not None:
         mapped = exclusive_cf_to_bd.get(exclusive_id)
+
         if mapped is not None:
             model_dict["special_id"] = mapped
             return
 
     if event_id is not None:
         mapped = event_cf_to_bd.get(event_id)
+
         if mapped is not None:
             model_dict["special_id"] = mapped
             return
@@ -117,6 +129,24 @@ def resolve_special_id(model_dict, exclusive_cf_to_bd, event_cf_to_bd):
     # fallback if exporter already had special_id
     if model_dict.get("special_id") is None:
         model_dict["special_id"] = None
+
+
+def detailed_skip_reason(
+    item_name,
+    model_id,
+    reason,
+    extra=None,
+):
+    msg = (
+        f"{item_name} - "
+        f"ID: {model_id} - "
+        f"SKIPPED: {reason}"
+    )
+
+    if extra:
+        msg += f" | DETAILS: {extra}"
+
+    return msg
 
 
 # ----------- ChatGPT Ends Here -------------
@@ -278,7 +308,10 @@ def read_bz2(path: str):
 output = []
 
 
-def reload_embed(start_time: float | None = None, status="RUNNING"):
+def reload_embed(
+    start_time: float | None = None,
+    status="RUNNING",
+):
     embed = discord.Embed(
         title="BD-Migrator Process",
         description=f"Status: **{status}**",
@@ -286,13 +319,20 @@ def reload_embed(start_time: float | None = None, status="RUNNING"):
 
     if status == "RUNNING":
         embed.color = discord.Color.yellow()
+
     elif status == "FINISHED":
         embed.color = discord.Color.green()
+
     elif status == "CANCELED":
         embed.color = discord.Color.red()
 
     if len(output) > 0:
-        recent_output = output[-20:] if len(output) > 20 else output
+        recent_output = (
+            output[-20:]
+            if len(output) > 20
+            else output
+        )
+
         output_text = "\n".join(recent_output)
 
         if len(output_text) > 1000:
@@ -305,7 +345,10 @@ def reload_embed(start_time: float | None = None, status="RUNNING"):
 
     if start_time is not None:
         embed.set_footer(
-            text=f"Ended migration in {round((time.time() - start_time), 3)}s"
+            text=(
+                f"Ended migration in "
+                f"{round((time.time() - start_time), 3)}s"
+            )
         )
 
     return embed
@@ -326,7 +369,8 @@ async def get_or_create_placeholder_player(
         return created_placeholders[placeholder_key]
 
     placeholder_discord_id = (
-        900000000000000000 + (missing_player_id % 99999999999999999)
+        900000000000000000
+        + (missing_player_id % 99999999999999999)
     )
 
     placeholder_player = await Player.filter(
@@ -336,11 +380,13 @@ async def get_or_create_placeholder_player(
     if not placeholder_player:
         try:
             donation = DonationPolicy.ALWAYS_ACCEPT
+
         except AttributeError:
             donation = list(DonationPolicy)[0]
 
         try:
             privacy = PrivacyPolicy.ALLOW_ALL
+
         except AttributeError:
             privacy = list(PrivacyPolicy)[0]
 
@@ -354,11 +400,28 @@ async def get_or_create_placeholder_player(
             f"Created placeholder Player "
             f"(discord_id={placeholder_discord_id}, "
             f"DB ID={placeholder_player.pk}) "
-            f"for missing Player ID {missing_player_id}\n"
+            f"for missing Player ID "
+            f"{missing_player_id}\n"
         )
 
-    created_placeholders[placeholder_key] = placeholder_player.pk
+    created_placeholders[
+        placeholder_key
+    ] = placeholder_player.pk
+
     return placeholder_player.pk
+
+
+async def send_long_message(
+    ctx,
+    content,
+):
+    chunks = [
+        content[i : i + 1900]
+        for i in range(0, len(content), 1900)
+    ]
+
+    for chunk in chunks:
+        await ctx.send(f"```{chunk}```")
 
 
 async def load(message):
@@ -368,10 +431,10 @@ async def load(message):
     data = {}
 
     # Maps CF exclusive pk -> BD Special pk
-    exclusive_cf_to_bd: dict[int, int] = {}
+    exclusive_cf_to_bd = {}
 
     # Maps CF event pk -> BD Special pk
-    event_cf_to_bd: dict[int, int] = {}
+    event_cf_to_bd = {}
 
     # Shared sequential counter for Special IDs
     special_counter = [1]
@@ -382,8 +445,13 @@ async def load(message):
         encoding="utf-8",
     )
 
-    skipped_log.write("=== MIGRATION SKIPPED RECORDS LOG ===\n")
-    skipped_log.write(f"Generated: {datetime.now()}\n\n")
+    skipped_log.write(
+        "=== MIGRATION SKIPPED RECORDS LOG ===\n"
+    )
+
+    skipped_log.write(
+        f"Generated: {datetime.now()}\n\n"
+    )
 
     placeholder_log = open(
         "placeholder_assignments.log",
@@ -391,14 +459,25 @@ async def load(message):
         encoding="utf-8",
     )
 
-    placeholder_log.write("=== PLACEHOLDER ASSIGNMENTS LOG ===\n")
-    placeholder_log.write(f"Generated: {datetime.now()}\n")
-    placeholder_log.write("Records assigned to placeholder entities:\n\n")
+    placeholder_log.write(
+        "=== PLACEHOLDER ASSIGNMENTS LOG ===\n"
+    )
+
+    placeholder_log.write(
+        f"Generated: {datetime.now()}\n"
+    )
+
+    placeholder_log.write(
+        "Records assigned to placeholder entities:\n\n"
+    )
 
     created_placeholders = {}
 
+    skip_summary = defaultdict(int)
+
     output.append(
-        f"- Reading migration file with {len(lines):,} lines..."
+        f"- Reading migration file with "
+        f"{len(lines):,} lines..."
     )
 
     await message.edit(embed=reload_embed())
@@ -412,7 +491,9 @@ async def load(message):
                 f"(line {index:,}/{len(lines):,})"
             )
 
-            await message.edit(embed=reload_embed())
+            await message.edit(
+                embed=reload_embed()
+            )
 
         if (
             line.startswith("//")
@@ -426,14 +507,18 @@ async def load(message):
 
             if section not in SECTIONS:
                 raise Exception(
-                    f"Invalid section '{section}' detected on line {index}"
+                    f"Invalid section '{section}' "
+                    f"detected on line {index}"
                 )
 
             continue
 
         # Dynamic field names written by exporter
         if line.startswith("#fields:"):
-            col_names = line[len("#fields:") :].split("╵")
+            col_names = (
+                line[len("#fields:") :]
+                .split("╵")
+            )
 
             if section in SECTIONS:
                 SECTIONS[section][1] = col_names
@@ -447,10 +532,14 @@ async def load(message):
 
         if section_full[1] is None:
             raise Exception(
-                f"No #fields header found before data in section '{section}'"
+                f"No #fields header found before "
+                f"data in section '{section}'"
             )
 
-        bucket_key = (section_full[0], section)
+        bucket_key = (
+            section_full[0],
+            section,
+        )
 
         if bucket_key not in data:
             data[bucket_key] = []
@@ -467,12 +556,25 @@ async def load(message):
         ):
             attribute_index += 1
 
-            if value == "id" and line_data == "":
-                skipped_log.write(
-                    f"Line {index} - "
-                    f"{section_full[0].__name__}: "
-                    f"SKIPPED - Empty ID field\n"
+            if (
+                value == "id"
+                and line_data == ""
+            ):
+                reason = detailed_skip_reason(
+                    section_full[0].__name__,
+                    "UNKNOWN",
+                    "Empty ID field",
+                    (
+                        f"line={index}, "
+                        f"attribute={attribute_index}"
+                    ),
                 )
+
+                skipped_log.write(reason + "\n")
+
+                skip_summary[
+                    "Empty ID field"
+                ] += 1
 
                 model_dict = None
                 break
@@ -481,51 +583,67 @@ async def load(message):
                 continue
 
             if value not in fields:
-                # allow exporter-only helper columns
                 if value not in (
                     "exclusive_id",
                     "event_id",
                 ):
                     raise Exception(
-                        f"Unknown value '{value}' detected on line "
-                        f"{index:,} - attribute "
-                        f"{attribute_index:,} in "
-                        f"{section_full[0].__name__} object"
+                        f"Unknown value '{value}' "
+                        f"detected on line "
+                        f"{index:,}"
                     )
 
             if line_data == "None":
                 line_data = None
+
             elif line_data == "🬀":
                 line_data = True
+
             elif line_data == "🬁":
                 line_data = False
 
             field_type = fields.get(value)
 
-            if line_data is not None and field_type is not None:
+            if (
+                line_data is not None
+                and field_type is not None
+            ):
                 if isinstance(field_type, IntField):
                     line_data = safe_int(line_data)
 
                 elif isinstance(field_type, FloatField):
                     line_data = safe_float(line_data)
 
-                elif isinstance(field_type, DatetimeField):
-                    line_data = safe_datetime(line_data)
+                elif isinstance(
+                    field_type,
+                    DatetimeField,
+                ):
+                    line_data = safe_datetime(
+                        line_data
+                    )
 
-                elif isinstance(field_type, DateField):
+                elif isinstance(
+                    field_type,
+                    DateField,
+                ):
                     line_data = safe_date(line_data)
 
             if isinstance(line_data, str):
-                line_data = line_data.replace("🮈", "\n")
+                line_data = line_data.replace(
+                    "🮈",
+                    "\n",
+                )
 
             model_dict[value] = line_data
 
         if model_dict is not None:
             model_dict["_section"] = section
+
             data[bucket_key].append(model_dict)
 
     output.append(
-        "- Finished reading migration file. Processing models..."
+        "- Finished reading migration file. "
+        "Processing models..."
     )
 
     await message.edit(embed=reload_embed())
@@ -559,9 +677,11 @@ async def load(message):
         value = data[bucket_key]
 
         output.append(
-            f"- Processing {item.__name__} "
+            f"- Processing "
+            f"{item.__name__} "
             f"[{section_key}]... "
-            f"({len(value):,} records to validate)"
+            f"({len(value):,} records "
+            f"to validate)"
         )
 
         await message.edit(embed=reload_embed())
@@ -570,15 +690,25 @@ async def load(message):
 
         fk_fields = {}
 
-        for field_name, field_obj in fields_map.items():
+        for (
+            field_name,
+            field_obj,
+        ) in fields_map.items():
             if (
-                hasattr(field_obj, "related_model")
-                and field_obj.related_model is not None
-            ):
-                fk_fields[field_name] = field_obj.related_model
-                fk_fields[field_name + "_id"] = (
-                    field_obj.related_model
+                hasattr(
+                    field_obj,
+                    "related_model",
                 )
+                and field_obj.related_model
+                is not None
+            ):
+                fk_fields[
+                    field_name
+                ] = field_obj.related_model
+
+                fk_fields[
+                    field_name + "_id"
+                ] = field_obj.related_model
 
         seen_ids = set()
         unique_values = []
@@ -591,64 +721,109 @@ async def load(message):
         for idx, model in enumerate(value):
             if idx > 0 and idx % 5000 == 0:
                 output[-1] = (
-                    f"- Processing {item.__name__} "
+                    f"- Processing "
+                    f"{item.__name__} "
                     f"[{section_key}]... "
-                    f"(validated {idx:,}/{len(value):,})"
+                    f"(validated "
+                    f"{idx:,}/{len(value):,})"
                 )
 
-                await message.edit(embed=reload_embed())
+                await message.edit(
+                    embed=reload_embed()
+                )
 
             model_id = model.get("id")
 
             model.pop("_section", None)
 
             if model_id is None:
-                skipped_log.write(
-                    f"{item.__name__} "
-                    f"[{section_key}] - "
-                    f"ID: None - SKIPPED: Null ID\n"
+                reason = detailed_skip_reason(
+                    item.__name__,
+                    "None",
+                    "Null ID",
                 )
+
+                skipped_log.write(reason + "\n")
+
+                skip_summary["Null ID"] += 1
 
                 skipped_count += 1
                 continue
 
             # ghost player filter
             if item == Player:
-                discord_id = model.get("discord_id")
+                discord_id = model.get(
+                    "discord_id"
+                )
 
                 try:
-                    did_str = str(int(discord_id))
-
-                    valid = (
-                        17 <= len(did_str) <= 19
-                        and int(discord_id) < 900000000000000000
+                    did_str = str(
+                        int(discord_id)
                     )
 
-                except (TypeError, ValueError):
+                    valid = (
+                        17
+                        <= len(did_str)
+                        <= 19
+                        and int(discord_id)
+                        < 900000000000000000
+                    )
+
+                except (
+                    TypeError,
+                    ValueError,
+                ):
                     valid = False
 
                 if not valid:
-                    skipped_log.write(
-                        f"Player - ID: {model_id} - "
-                        f"SKIPPED: Invalid discord_id={discord_id}\n"
+                    reason = detailed_skip_reason(
+                        "Player",
+                        model_id,
+                        (
+                            "Invalid Discord ID"
+                        ),
+                        (
+                            f"discord_id="
+                            f"{discord_id}, "
+                            f"must be 17-19 "
+                            f"digits and below "
+                            f"placeholder range"
+                        ),
                     )
+
+                    skipped_log.write(
+                        reason + "\n"
+                    )
+
+                    skip_summary[
+                        "Invalid Discord ID"
+                    ] += 1
 
                     skipped_count += 1
                     continue
 
             if model_id in seen_ids:
-                skipped_log.write(
-                    f"{item.__name__} "
-                    f"[{section_key}] - "
-                    f"ID: {model_id} - "
-                    f"SKIPPED: Duplicate ID\n"
+                reason = detailed_skip_reason(
+                    item.__name__,
+                    model_id,
+                    "Duplicate ID",
+                    (
+                        "Another record with "
+                        "same ID already "
+                        "exists in batch"
+                    ),
                 )
+
+                skipped_log.write(reason + "\n")
+
+                skip_summary[
+                    "Duplicate ID"
+                ] += 1
 
                 skipped_count += 1
                 duplicate_count += 1
                 continue
 
-            # map special IDs before FK validation
             if item == BallInstance:
                 resolve_special_id(
                     model,
@@ -658,55 +833,15 @@ async def load(message):
 
             has_invalid_fk = False
 
-            for fk_field_name, related_model in fk_fields.items():
-                fk_value = model.get(fk_field_name)
+            for (
+                fk_field_name,
+                related_model,
+            ) in fk_fields.items():
+                fk_value = model.get(
+                    fk_field_name
+                )
 
                 if fk_value is None:
-                    continue
-
-                if fk_value == 0:
-                    base_field_name = (
-                        fk_field_name[:-3]
-                        if fk_field_name.endswith("_id")
-                        else fk_field_name
-                    )
-
-                    field_obj = fields_map.get(base_field_name)
-
-                    is_nullable = (
-                        field_obj is not None
-                        and getattr(field_obj, "null", False)
-                    )
-
-                    if is_nullable:
-                        model[fk_field_name] = None
-
-                    elif related_model == Player:
-                        placeholder_id = (
-                            await get_or_create_placeholder_player(
-                                0,
-                                placeholder_log,
-                                created_placeholders,
-                            )
-                        )
-
-                        if Player not in inserted_ids:
-                            inserted_ids[Player] = set()
-
-                        inserted_ids[Player].add(placeholder_id)
-
-                        model[fk_field_name] = placeholder_id
-
-                    else:
-                        skipped_log.write(
-                            f"{item.__name__} - ID: {model_id} - "
-                            f"SKIPPED: "
-                            f"{fk_field_name}=0 is invalid\n"
-                        )
-
-                        has_invalid_fk = True
-                        fk_violation_count += 1
-
                     continue
 
                 exists_in_current_batch = (
@@ -715,50 +850,96 @@ async def load(message):
                 )
 
                 exists_in_tracking = (
-                    related_model in inserted_ids
-                    and fk_value in inserted_ids[related_model]
+                    related_model
+                    in inserted_ids
+                    and fk_value
+                    in inserted_ids[
+                        related_model
+                    ]
                 )
 
                 if (
                     not exists_in_current_batch
                     and not exists_in_tracking
                 ):
-                    exists_in_db = await related_model.filter(
-                        pk=fk_value
-                    ).exists()
+                    exists_in_db = (
+                        await related_model
+                        .filter(pk=fk_value)
+                        .exists()
+                    )
 
                     if not exists_in_db:
                         if related_model == Player:
-                            skipped_log.write(
-                                f"{item.__name__} - "
-                                f"ID: {model_id} - "
-                                f"SKIPPED: "
-                                f"player_id={fk_value} "
-                                f"not found "
-                                f"(ghost player avoided)\n"
+                            reason = (
+                                detailed_skip_reason(
+                                    item.__name__,
+                                    model_id,
+                                    (
+                                        "Missing "
+                                        "Player FK"
+                                    ),
+                                    (
+                                        f"{fk_field_name}="
+                                        f"{fk_value} "
+                                        f"does not "
+                                        f"exist"
+                                    ),
+                                )
                             )
+
+                            skipped_log.write(
+                                reason + "\n"
+                            )
+
+                            skip_summary[
+                                "Missing Player FK"
+                            ] += 1
 
                             has_invalid_fk = True
                             fk_violation_count += 1
                             break
 
                         elif related_model == Special:
-                            model[fk_field_name] = None
+                            model[
+                                fk_field_name
+                            ] = None
 
                             placeholder_log.write(
                                 f"{item.__name__} "
                                 f"ID {model_id}: "
-                                f"Set {fk_field_name}=None "
-                                f"(Special ID {fk_value} not found)\n"
+                                f"Set "
+                                f"{fk_field_name}"
+                                f"=None because "
+                                f"Special "
+                                f"{fk_value} "
+                                f"not found\n"
                             )
 
                         else:
-                            skipped_log.write(
-                                f"{item.__name__} - "
-                                f"ID: {model_id} - "
-                                f"SKIPPED: Invalid FK "
-                                f"{fk_field_name}={fk_value}\n"
+                            reason = (
+                                detailed_skip_reason(
+                                    item.__name__,
+                                    model_id,
+                                    (
+                                        "Invalid FK"
+                                    ),
+                                    (
+                                        f"{fk_field_name}="
+                                        f"{fk_value} "
+                                        f"references "
+                                        f"missing "
+                                        f"{related_model.__name__}"
+                                    ),
+                                )
                             )
+
+                            skipped_log.write(
+                                reason + "\n"
+                            )
+
+                            skip_summary[
+                                "Invalid FK"
+                            ] += 1
 
                             has_invalid_fk = True
                             fk_violation_count += 1
@@ -771,46 +952,75 @@ async def load(message):
             skip_record = False
 
             null_fields = []
-            defaults_set = []
 
-            for field_name, field_value in list(model.items()):
+            for (
+                field_name,
+                field_value,
+            ) in list(model.items()):
                 if (
                     field_value is None
-                    and field_name in fields_map
+                    and field_name
+                    in fields_map
                 ):
-                    field_obj = fields_map[field_name]
+                    field_obj = fields_map[
+                        field_name
+                    ]
 
                     if (
-                        hasattr(field_obj, "null")
+                        hasattr(
+                            field_obj,
+                            "null",
+                        )
                         and not field_obj.null
                     ):
                         if field_name in (
                             "country",
                             "short_name",
                         ):
-                            model[field_name] = "Unknown"
-
-                            defaults_set.append(
-                                f"{field_name}='Unknown'"
-                            )
+                            model[
+                                field_name
+                            ] = "Unknown"
 
                         elif field_name == "enabled":
-                            model[field_name] = True
+                            model[
+                                field_name
+                            ] = True
 
-                        elif field_name == "tradeable":
-                            model[field_name] = True
+                        elif (
+                            field_name
+                            == "tradeable"
+                        ):
+                            model[
+                                field_name
+                            ] = True
 
                         else:
-                            null_fields.append(field_name)
+                            null_fields.append(
+                                field_name
+                            )
+
                             skip_record = True
 
             if skip_record:
-                skipped_log.write(
-                    f"{item.__name__} - "
-                    f"ID: {model_id} - "
-                    f"SKIPPED: Null required fields: "
-                    f"{', '.join(null_fields)}\n"
+                reason = detailed_skip_reason(
+                    item.__name__,
+                    model_id,
+                    (
+                        "Null required "
+                        "fields"
+                    ),
+                    (
+                        ", ".join(
+                            null_fields
+                        )
+                    ),
                 )
+
+                skipped_log.write(reason + "\n")
+
+                skip_summary[
+                    "Null required fields"
+                ] += 1
 
                 skipped_count += 1
                 null_field_count += 1
@@ -818,25 +1028,32 @@ async def load(message):
 
             seen_ids.add(model_id)
 
-            # sequential Special IDs
             if item == Special:
                 new_id = special_counter[0]
+
                 special_counter[0] += 1
 
                 if section_key == "S-EX":
-                    exclusive_cf_to_bd[model_id] = new_id
+                    exclusive_cf_to_bd[
+                        model_id
+                    ] = new_id
 
                 elif section_key == "S-EV":
-                    event_cf_to_bd[model_id] = new_id
+                    event_cf_to_bd[
+                        model_id
+                    ] = new_id
 
                 model["id"] = new_id
 
             unique_values.append(model)
 
         output[-1] = (
-            f"- Creating {item.__name__} "
-            f"[{section_key}] instances... "
-            f"({len(unique_values):,} valid records)"
+            f"- Creating "
+            f"{item.__name__} "
+            f"[{section_key}] "
+            f"instances... "
+            f"({len(unique_values):,} "
+            f"valid records)"
         )
 
         await message.edit(embed=reload_embed())
@@ -848,12 +1065,17 @@ async def load(message):
         for idx, model in enumerate(unique_values):
             if idx > 0 and idx % 5000 == 0:
                 output[-1] = (
-                    f"- Creating {item.__name__} "
-                    f"[{section_key}] instances... "
-                    f"({idx:,}/{len(unique_values):,})"
+                    f"- Creating "
+                    f"{item.__name__} "
+                    f"[{section_key}] "
+                    f"instances... "
+                    f"({idx:,}/"
+                    f"{len(unique_values):,})"
                 )
 
-                await message.edit(embed=reload_embed())
+                await message.edit(
+                    embed=reload_embed()
+                )
 
             if model.get("short_name") is None:
                 model["short_name"] = "Unknown"
@@ -872,75 +1094,33 @@ async def load(message):
             if emoji_id is not None:
                 try:
                     emoji_id_int = int(emoji_id)
-                    emoji_id_str = str(emoji_id_int)
+
+                    emoji_id_str = str(
+                        emoji_id_int
+                    )
 
                     if (
-                        len(emoji_id_str) < 17
-                        or len(emoji_id_str) > 19
+                        len(emoji_id_str)
+                        < 17
+                        or len(emoji_id_str)
+                        > 19
                     ):
-                        model["emoji_id"] = (
+                        model[
+                            "emoji_id"
+                        ] = (
                             1234567890123456789
                         )
 
-                except (ValueError, TypeError):
-                    model["emoji_id"] = 1234567890123456789
+                except (
+                    ValueError,
+                    TypeError,
+                ):
+                    model[
+                        "emoji_id"
+                    ] = 1234567890123456789
 
             try:
                 instance = item(**model)
-
-                for fk_field_name in list(fk_fields.keys()):
-                    if not fk_field_name.endswith("_id"):
-                        continue
-
-                    inst_val = getattr(
-                        instance,
-                        fk_field_name,
-                        None,
-                    )
-
-                    if inst_val == 0:
-                        related_model = fk_fields[fk_field_name]
-
-                        base_name = fk_field_name[:-3]
-
-                        field_obj = (
-                            fields_map.get(base_name)
-                            or fields_map.get(fk_field_name)
-                        )
-
-                        is_nullable = (
-                            field_obj is not None
-                            and getattr(field_obj, "null", False)
-                        )
-
-                        if is_nullable:
-                            setattr(
-                                instance,
-                                fk_field_name,
-                                None,
-                            )
-
-                        elif related_model == Player:
-                            placeholder_id = (
-                                await get_or_create_placeholder_player(
-                                    0,
-                                    placeholder_log,
-                                    created_placeholders,
-                                )
-                            )
-
-                            if Player not in inserted_ids:
-                                inserted_ids[Player] = set()
-
-                            inserted_ids[Player].add(
-                                placeholder_id
-                            )
-
-                            setattr(
-                                instance,
-                                fk_field_name,
-                                placeholder_id,
-                            )
 
                 try:
                     await instance.full_clean()
@@ -949,164 +1129,82 @@ async def load(message):
                     pass
 
                 except ValidationError as ve:
-                    skipped_log.write(
-                        f"{item.__name__} - "
-                        f"ID: {model.get('id')} - "
-                        f"SKIPPED: Validation error: "
-                        f"{str(ve)[:200]}\n"
+                    reason = (
+                        detailed_skip_reason(
+                            item.__name__,
+                            model.get("id"),
+                            (
+                                "Validation "
+                                "error"
+                            ),
+                            str(ve)[:500],
+                        )
                     )
+
+                    skipped_log.write(
+                        reason + "\n"
+                    )
+
+                    skip_summary[
+                        "Validation error"
+                    ] += 1
 
                     skipped_count += 1
                     validation_fail_count += 1
+
                     continue
 
                 items.append(instance)
 
-            except (ValueError, ValidationError) as e:
-                skipped_log.write(
-                    f"{item.__name__} - "
-                    f"ID: {model.get('id')} - "
-                    f"SKIPPED: {str(e)[:200]}\n"
+            except (
+                ValueError,
+                ValidationError,
+            ) as e:
+                reason = detailed_skip_reason(
+                    item.__name__,
+                    model.get("id"),
+                    "Instantiation error",
+                    str(e)[:500],
                 )
+
+                skipped_log.write(reason + "\n")
+
+                skip_summary[
+                    "Instantiation error"
+                ] += 1
 
                 skipped_count += 1
                 validation_fail_count += 1
+
                 continue
 
         output[-1] = (
-            f"- Saving {item.__name__} "
-            f"[{section_key}] to database... "
+            f"- Saving "
+            f"{item.__name__} "
+            f"[{section_key}] "
+            f"to database... "
             f"({len(items):,} objects)"
         )
 
         await message.edit(embed=reload_embed())
 
         if items:
-            fixed_count = 0
-
-            STRING_FIELD_TYPES = (
-                "CharField",
-                "TextField",
-            )
-
-            for instance in items:
-                instance_fields = instance._meta.fields_map
-
-                for field_name, field_obj in instance_fields.items():
-                    if hasattr(field_obj, "related_model"):
-                        continue
-
-                    if not (
-                        hasattr(field_obj, "null")
-                        and not field_obj.null
-                    ):
-                        continue
-
-                    val = getattr(instance, field_name, None)
-
-                    if val is not None:
-                        if field_name == "emoji_id":
-                            if (
-                                len(str(val)) < 17
-                                or len(str(val)) > 19
-                            ):
-                                setattr(
-                                    instance,
-                                    field_name,
-                                    1234567890123456789,
-                                )
-
-                                fixed_count += 1
-
-                        continue
-
-                    field_type = type(field_obj).__name__
-
-                    if field_name == "emoji_id":
-                        setattr(
-                            instance,
-                            field_name,
-                            1234567890123456789,
-                        )
-
-                    elif field_type in STRING_FIELD_TYPES:
-                        setattr(
-                            instance,
-                            field_name,
-                            "Unknown",
-                        )
-
-                    elif field_type == "IntField":
-                        setattr(instance, field_name, 0)
-
-                    elif field_type == "FloatField":
-                        setattr(instance, field_name, 0.0)
-
-                    elif field_type == "BooleanField":
-                        setattr(instance, field_name, False)
-
-                    elif field_type == "DatetimeField":
-                        setattr(
-                            instance,
-                            field_name,
-                            datetime.now(),
-                        )
-
-                    elif field_type == "DateField":
-                        setattr(
-                            instance,
-                            field_name,
-                            datetime.now().date(),
-                        )
-
-                    else:
-                        setattr(
-                            instance,
-                            field_name,
-                            "Unknown",
-                        )
-
-                    fixed_count += 1
-
-            zero_fk_fixed = 0
-
-            for instance in items:
-                for attr in list(vars(instance).keys()):
-                    if (
-                        attr.endswith("_id")
-                        and not attr.startswith("_")
-                    ):
-                        val = getattr(instance, attr, None)
-
-                        if val == 0:
-                            base = attr[:-3]
-
-                            field_obj = (
-                                instance._meta.fields_map.get(base)
-                                or instance._meta.fields_map.get(attr)
-                            )
-
-                            is_nullable = (
-                                field_obj is not None
-                                and getattr(field_obj, "null", False)
-                            )
-
-                            if is_nullable:
-                                setattr(instance, attr, None)
-                            else:
-                                setattr(instance, attr, None)
-
-                            zero_fk_fixed += 1
-
             try:
                 await item.bulk_create(items)
 
                 if item == Special:
-                    if Special not in inserted_ids:
-                        inserted_ids[Special] = set()
+                    if (
+                        Special
+                        not in inserted_ids
+                    ):
+                        inserted_ids[
+                            Special
+                        ] = set()
 
                     for inst in items:
-                        inserted_ids[Special].add(inst.id)
+                        inserted_ids[
+                            Special
+                        ].add(inst.id)
 
                 else:
                     inserted_ids[item] = seen_ids
@@ -1115,7 +1213,8 @@ async def load(message):
 
             except Exception as e:
                 error_msg = (
-                    f"ERROR: {type(e).__name__}: "
+                    f"ERROR: "
+                    f"{type(e).__name__}: "
                     f"{str(e)[:500]}"
                 )
 
@@ -1127,10 +1226,13 @@ async def load(message):
                 )
 
                 output.append(
-                    f"- CRITICAL ERROR: {error_msg}"
+                    f"- CRITICAL ERROR: "
+                    f"{error_msg}"
                 )
 
-                await message.edit(embed=reload_embed())
+                await message.edit(
+                    embed=reload_embed()
+                )
 
                 skipped_log.close()
                 placeholder_log.close()
@@ -1138,199 +1240,143 @@ async def load(message):
                 raise
 
         msg = (
-            f"- Added **{len(items):,}** "
+            f"- Added "
+            f"**{len(items):,}** "
             f"{item.__name__} "
-            f"[{section_key}] objects."
+            f"[{section_key}] "
+            f"objects."
         )
-
-        skip_details = []
-
-        if fk_violation_count > 0:
-            skip_details.append(
-                f"{fk_violation_count} FK violations"
-            )
-
-        if null_field_count > 0:
-            skip_details.append(
-                f"{null_field_count} null fields"
-            )
-
-        if duplicate_count > 0:
-            skip_details.append(
-                f"{duplicate_count} duplicates"
-            )
-
-        if validation_fail_count > 0:
-            skip_details.append(
-                f"{validation_fail_count} validation errors"
-            )
-
-        if skip_details:
-            msg += (
-                f" (skipped: {', '.join(skip_details)})"
-            )
 
         output[-1] = msg
 
         await message.edit(embed=reload_embed())
 
     output.append(
-        "- Applying exclusive/event priority to ball instances..."
+        "- Updating database sequences..."
     )
-
-    await message.edit(embed=reload_embed())
-
-    updated = 0
-    skipped_special = 0
-
-    async for bi in BallInstance.all().only(
-        "id",
-        "special_id",
-    ):
-        pass
-
-    skipped_bi_count = sum(
-        1
-        for line in open(
-            "skipped_records.log",
-            encoding="utf-8",
-        )
-        if "BallInstance" in line and "SKIPPED" in line
-    )
-
-    if skipped_bi_count > 0:
-        await ctx.send(  # type: ignore # noqa: F821
-            f"⚠️ **{skipped_bi_count} "
-            f"BallInstances were skipped during migration.**\n"
-            "Common reasons:\n"
-            "- Player no longer exists "
-            "(ghost player avoided)\n"
-            "- Referenced Ball ID not found "
-            "in migrated data\n"
-            "- Required fields were null/invalid\n"
-            "Check `skipped_records.log` "
-            "for the full list."
-        )
-
-    output.append("- Updating database sequences...")
 
     await message.edit(embed=reload_embed())
 
     await sequence_all_models()
 
-    skipped_log.write("\n=== END OF LOG ===\n")
+    skipped_log.write(
+        "\n=== END OF LOG ===\n"
+    )
+
     skipped_log.close()
 
-    placeholder_log.write("\n=== END OF LOG ===\n")
+    placeholder_log.write(
+        "\n=== END OF LOG ===\n"
+    )
+
     placeholder_log.close()
 
     try:
-        if os.path.exists("skipped_records.log"):
+        if os.path.exists(
+            "skipped_records.log"
+        ):
             shutil.copy(
                 "skipped_records.log",
-                "/mnt/user-data/outputs/skipped_records.log",
+                (
+                    "/mnt/user-data/outputs/"
+                    "skipped_records.log"
+                ),
             )
 
-        if os.path.exists("placeholder_assignments.log"):
+        if os.path.exists(
+            "placeholder_assignments.log"
+        ):
             shutil.copy(
                 "placeholder_assignments.log",
-                "/mnt/user-data/outputs/placeholder_assignments.log",
+                (
+                    "/mnt/user-data/outputs/"
+                    "placeholder_assignments.log"
+                ),
             )
 
         output.append(
             "- Migration complete! "
-            "Logs saved to outputs directory."
+            "Logs saved to outputs "
+            "directory."
         )
 
     except Exception:
         output.append(
             "- Migration complete! "
-            "Logs saved to working directory."
+            "Logs saved to working "
+            "directory."
         )
 
     await message.edit(
-        embed=reload_embed(start_time, "FINISHED")
+        embed=reload_embed(
+            start_time,
+            "FINISHED",
+        )
     )
 
-    skipped_balls = 0
-    skipped_players = 0
-    skipped_bis = 0
+    summary_lines = [
+        "=== SKIP SUMMARY ===",
+    ]
 
+    total_skipped = 0
+
+    for (
+        reason,
+        count,
+    ) in sorted(
+        skip_summary.items(),
+        key=lambda x: x[1],
+        reverse=True,
+    ):
+        total_skipped += count
+
+        summary_lines.append(
+            f"{reason}: {count}"
+        )
+
+    summary_lines.append("")
+    summary_lines.append(
+        f"TOTAL SKIPPED: "
+        f"{total_skipped}"
+    )
+
+    await send_long_message(
+        ctx,
+        "\n".join(summary_lines),
+    )  # type: ignore # noqa: F821
+
+    # Send detailed log in Discord
     try:
+        log_path = (
+            "/mnt/user-data/outputs/"
+            "skipped_records.log"
+        )
+
+        if not os.path.exists(log_path):
+            log_path = "skipped_records.log"
+
         with open(
-            "skipped_records.log",
+            log_path,
+            "r",
             encoding="utf-8",
         ) as f:
-            for line in f:
-                if (
-                    "Ball [B]" in line
-                    and "SKIPPED" in line
-                ):
-                    skipped_balls += 1
+            content = f.read()
 
-                elif (
-                    "Player [P]" in line
-                    and "SKIPPED" in line
-                ):
-                    skipped_players += 1
-
-                elif (
-                    "BallInstance [BI]" in line
-                    and "SKIPPED" in line
-                ):
-                    skipped_bis += 1
-
-    except Exception:
-        pass
-
-    if (
-        skipped_balls > 0
-        or skipped_players > 0
-        or skipped_bis > 0
-    ):
-        msg = "⚠️ **Skipped Records:**\n"
-
-        if skipped_balls > 0:
-            msg += (
-                f"- **{skipped_balls} Balls**: "
-                "Required fields null/invalid\n"
-            )
-
-        if skipped_players > 0:
-            msg += (
-                f"- **{skipped_players} Players**: "
-                "Invalid Discord ID\n"
-            )
-
-        if skipped_bis > 0:
-            msg += (
-                f"- **{skipped_bis} BallInstances**: "
-                "Missing player/ball or null fields\n"
-            )
-
-        await ctx.send(msg)  # type: ignore # noqa: F821
-
-        try:
-            if os.path.exists(
-                "/mnt/user-data/outputs/skipped_records.log"
-            ):
-                await ctx.send(
-                    file=discord.File(
-                        "/mnt/user-data/outputs/skipped_records.log"
-                    )
-                )  # type: ignore # noqa: F821
-
-            elif os.path.exists("skipped_records.log"):
-                await ctx.send(
-                    file=discord.File(
-                        "skipped_records.log"
-                    )
-                )  # type: ignore # noqa: F821
-
-        except Exception as e:
+        if len(content) <= 1900:
             await ctx.send(
-                f"Could not send log: {str(e)[:100]}"
+                f"```{content}```"
             )  # type: ignore # noqa: F821
+
+        else:
+            await ctx.send(
+                file=discord.File(log_path)
+            )  # type: ignore # noqa: F821
+
+    except Exception as e:
+        await ctx.send(
+            f"Failed to send skipped log: "
+            f"{str(e)[:200]}"
+        )  # type: ignore # noqa: F821
 
 
 async def sequence_model(model):
@@ -1338,13 +1384,18 @@ async def sequence_model(model):
         return
 
     try:
-        client = Tortoise.get_connection("default")
+        client = Tortoise.get_connection(
+            "default"
+        )
 
         last_id = (
             await model.all()
             .order_by("-id")
             .first()
-            .values_list("id", flat=True)
+            .values_list(
+                "id",
+                flat=True,
+            )
         )
 
         await client.execute_query(
@@ -1369,7 +1420,9 @@ async def sequence_all_models():
 
 
 async def clear_all_data():
-    client = Tortoise.get_connection("default")
+    client = Tortoise.get_connection(
+        "default"
+    )
 
     all_models = [
         Regime,
@@ -1392,26 +1445,35 @@ async def clear_all_data():
     ]
 
     if table_names:
-        tables_str = ", ".join(table_names)
+        tables_str = ", ".join(
+            table_names
+        )
 
         try:
             await client.execute_query(
-                f"TRUNCATE TABLE {tables_str} "
-                f"RESTART IDENTITY CASCADE;"
+                f"TRUNCATE TABLE "
+                f"{tables_str} "
+                f"RESTART IDENTITY "
+                f"CASCADE;"
             )
 
         except Exception as e:
             output.append(
                 f"- TRUNCATE failed, "
-                f"using fallback: {str(e)}"
+                f"using fallback: "
+                f"{str(e)}"
             )
 
-            for model in reversed(all_models):
+            for model in reversed(
+                all_models
+            ):
                 await model.all().delete()
 
             for model in all_models:
                 try:
-                    table = model._meta.db_table
+                    table = (
+                        model._meta.db_table
+                    )
 
                     await client.execute_query(
                         f"ALTER SEQUENCE "
@@ -1426,14 +1488,21 @@ async def clear_all_data():
 async def main():
     if os.path.isdir("carfigures"):
         print(
-            "You cannot run this command from CarFigures."
+            "You cannot run this command "
+            "from CarFigures."
         )
+
         return
 
-    if not os.path.isfile("migration.txt.bz2"):
+    if not os.path.isfile(
+        "migration.txt.bz2"
+    ):
         print(
-            "Could not find `migration.txt.bz2` migration file."
+            "Could not find "
+            "`migration.txt.bz2` "
+            "migration file."
         )
+
         return
 
     try:
@@ -1441,31 +1510,42 @@ async def main():
             "**WARNING**: "
             "All existing data on this bot "
             "will be **CLEARED**.\n"
-            "Type `proceed` if you wish to proceed.\n"
-            "Type `cancel` if you wish to cancel."
+            "Type `proceed` if you wish "
+            "to proceed.\n"
+            "Type `cancel` if you wish "
+            "to cancel."
         )
 
         confirm_message = await bot.wait_for(  # type: ignore # noqa: F821
             "message",
             check=lambda m: (
                 m.author == ctx.author
-                and m.channel == ctx.channel
+                and m.channel
+                == ctx.channel
                 and m.content.lower()
-                in ["proceed", "cancel"]
+                in [
+                    "proceed",
+                    "cancel",
+                ]
             ),
             timeout=20,
         )
 
     except asyncio.TimeoutError:
         await ctx.send(
-            "Canceled due to response timeout."
+            "Canceled due to response "
+            "timeout."
         )  # type: ignore # noqa: F821
 
         return
 
-    if confirm_message.content.lower() != "proceed":
+    if (
+        confirm_message.content.lower()
+        != "proceed"
+    ):
         await ctx.send(
-            "Canceled due to message response."
+            "Canceled due to message "
+            "response."
         )  # type: ignore # noqa: F821
 
         return
@@ -1474,7 +1554,9 @@ async def main():
         embed=reload_embed()
     )  # type: ignore # noqa: F821
 
-    output.append("- Clearing existing data...")
+    output.append(
+        "- Clearing existing data..."
+    )
 
     await message.edit(embed=reload_embed())
 
