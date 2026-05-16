@@ -74,7 +74,7 @@ SECTIONS = {
     "E": [Economy, ["id", "icon", "name"]],
     "S-EX": [Special, ["id", "catch_phrase", "emoji", "background", "name", "rarity"]],
     "S-EV": [Special, ["id", "background", "catch_phrase", "emoji", "end_date", "hidden", "name", "rarity", "start_date", "tradeable"]],
-    "B": [Ball, None],   # columns read dynamically from #fields line
+    "B": [Ball, ["id", "regime_id", "economy_id", "country", "short_name", "catch_names", "health", "attack", "rarity", "emoji_id", "wild_card", "collection_card", "credits", "capacity_name", "capacity_description", "created_at", "enabled", "tradeable"]],
     "BI": [BallInstance, ["id", "ball_id", "catch_date", "exclusive_id", "event_id", "favorite", "attack_bonus", "player_id", "server_id", "spawned_time", "trade_player_id", "tradeable", "health_bonus"]],
     "P": [Player, ["id", "discord_id", "donation_policy", "privacy_policy"]],
     "GC": [GuildConfig, ["id", "enabled", "guild_id", "spawn_channel"]],
