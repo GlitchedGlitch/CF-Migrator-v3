@@ -45,7 +45,12 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
             "name",
             "image",
             "rarity",
+            "catchPhrase",
+            "emoji",
         ],
+        "rename": {
+            "catchPhrase": "catch_phrase",
+        },
         "defaults": {
             "catchPhrase": None,
             "emoji": None,
@@ -58,7 +63,18 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
             "name",
             "rarity",
             "card",
+            "catchPhrase",
+            "startDate",
+            "endDate",
+            "emoji",
+            "tradeable",
+            "hidden",
         ],
+        "rename": {
+            "catchPhrase": "catch_phrase",
+            "startDate": "start_date",
+            "endDate": "end_date",
+        },
         "defaults": {
             "catchPhrase": None,
             "startDate": None,
