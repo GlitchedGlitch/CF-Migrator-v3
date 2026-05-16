@@ -315,13 +315,13 @@ async def load(message):
                 continue
 
             # --- Ghost player filter ---
-            # Accept Discord snowflakes: 17-19 digits, reject known placeholder ranges
+            # Accept: 17-19 digit Discord IDs, reject 900000000000000000+ placeholders
             if item == Player:
                 discord_id = model.get('discord_id')
                 try:
-                    did = int(discord_id)
-                    # Valid: 17-19 digits, NOT in 900000000000000000+ range
-                    valid = 17 <= len(str(did)) <= 19 and did < 900000000000000000
+                    did_str = str(int(discord_id))
+                    # Valid if: 17-19 chars AND not in placeholder range
+                    valid = (17 <= len(did_str) <= 19) and (int(discord_id) < 900000000000000000)
                 except (TypeError, ValueError):
                     valid = False
                 if not valid:
@@ -659,8 +659,16 @@ async def load(message):
             msg += f"- **{skipped_players} Players**: Invalid Discord ID\n"
         if skipped_bis > 0:
             msg += f"- **{skipped_bis} BallInstances**: Missing player/ball or null fields\n"
-        msg += "See `skipped_records.log` for details."
         await ctx.send(msg)  # type: ignore # noqa: F821
+        
+        # Send log file
+        try:
+            if os.path.exists("/mnt/user-data/outputs/skipped_records.log"):
+                await ctx.send(file=discord.File("/mnt/user-data/outputs/skipped_records.log"))  # type: ignore # noqa: F821
+            elif os.path.exists("skipped_records.log"):
+                await ctx.send(file=discord.File("skipped_records.log"))  # type: ignore # noqa: F821
+        except Exception as e:
+            await ctx.send(f"Could not send log: {str(e)[:100]}")  # type: ignore # noqa: F821
 
 
 async def sequence_model(model):
