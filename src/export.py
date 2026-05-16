@@ -104,7 +104,6 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
             "carCredits",
             "capacityName",
             "capacityDescription",
-            "createdAt",
             "enabled",
             "tradeable",
         ],
@@ -122,7 +121,6 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
             "carCredits": "credits",
             "capacityName": "capacity_name",
             "capacityDescription": "capacity_description",
-            "createdAt": "created_at",
         },
         "defaults": {
             "country_id": None,
