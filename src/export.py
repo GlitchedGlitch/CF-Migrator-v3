@@ -29,7 +29,6 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
         "process": "CarType",
         "values": [
             "name",
-            "image",
         ],
     },
     "E": {
@@ -37,7 +36,6 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
         "process": "Country",
         "values": [
             "name",
-            "image",
         ],
     },
     "S-EX": {
