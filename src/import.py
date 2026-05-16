@@ -640,6 +640,31 @@ async def load(message):
     
     await message.edit(embed=reload_embed(start_time, "FINISHED"))
 
+    # Count and report skipped records
+    skipped_balls = skipped_players = skipped_bis = 0
+    try:
+        with open("skipped_records.log", encoding="utf-8") as f:
+            for line in f:
+                if "Ball [B]" in line and "SKIPPED" in line:
+                    skipped_balls += 1
+                elif "Player [P]" in line and "SKIPPED" in line:
+                    skipped_players += 1
+                elif "BallInstance [BI]" in line and "SKIPPED" in line:
+                    skipped_bis += 1
+    except:
+        pass
+
+    if skipped_balls > 0 or skipped_players > 0 or skipped_bis > 0:
+        msg = "⚠️ **Skipped Records:**\n"
+        if skipped_balls > 0:
+            msg += f"- **{skipped_balls} Balls**: Required fields null/invalid\n"
+        if skipped_players > 0:
+            msg += f"- **{skipped_players} Players**: Invalid Discord ID\n"
+        if skipped_bis > 0:
+            msg += f"- **{skipped_bis} BallInstances**: Missing player/ball or null fields\n"
+        msg += "See `skipped_records.log` for details."
+        await ctx.send(msg)  # type: ignore # noqa: F821
+
 
 async def sequence_model(model):
     if await model.all().count() == 0:
