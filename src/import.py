@@ -75,7 +75,7 @@ SECTIONS = {
     "S-EX": [Special, ["id", "catch_phrase", "emoji", "background", "name", "rarity"]],
     "S-EV": [Special, ["id", "background", "catch_phrase", "emoji", "end_date", "hidden", "name", "rarity", "start_date", "tradeable"]],
     "B": [Ball, None],   # columns read dynamically from #fields line
-    "BI": [BallInstance, None],  # columns read dynamically from #fields line
+    "BI": [BallInstance, ["id", "ball_id", "catch_date", "exclusive_id", "event_id", "favorite", "attack_bonus", "player_id", "server_id", "spawned_time", "trade_player_id", "tradeable", "health_bonus"]],
     "P": [Player, ["id", "discord_id", "donation_policy", "privacy_policy"]],
     "GC": [GuildConfig, ["id", "enabled", "guild_id", "spawn_channel"]],
     "F": [Friendship, ["id", "player1_id", "player2_id", "since"]],
@@ -178,7 +178,7 @@ async def load(message):
             output[-1] = f"- Reading migration file... (line {index:,}/{len(lines):,})"
             await message.edit(embed=reload_embed())
 
-        if line.startswith("//") or line == "":
+        if line.startswith("//") or line.startswith("#") or line == "":
             continue
 
         if line.startswith(":"):
