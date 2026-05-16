@@ -74,8 +74,8 @@ SECTIONS = {
     "E": [Economy, ["id", "icon", "name"]],
     "S-EX": [Special, ["id", "catch_phrase", "emoji", "background", "name", "rarity"]],
     "S-EV": [Special, ["id", "background", "catch_phrase", "emoji", "end_date", "hidden", "name", "rarity", "start_date", "tradeable"]],
-    "B": [Ball, ["id", "capacity_description", "capacity_name", "credits", "regime_id", "catch_names", "collection_card", "economy_id", "created_at", "emoji_id", "enabled", "country", "attack", "rarity", "short_name", "wild_card", "tradeable", "health"]],
-    "BI": [BallInstance, ["id", "ball_id", "catch_date", "special_id", "favorite", "attack_bonus", "player_id", "server_id", "spawned_time", "trade_player_id", "tradeable", "health_bonus"]],
+    "B": [Ball, None],   # columns read dynamically from #fields line
+    "BI": [BallInstance, None],  # columns read dynamically from #fields line
     "P": [Player, ["id", "discord_id", "donation_policy", "privacy_policy"]],
     "GC": [GuildConfig, ["id", "enabled", "guild_id", "spawn_channel"]],
     "F": [Friendship, ["id", "player1_id", "player2_id", "since"]],
@@ -153,6 +153,9 @@ async def load(message):
     exclusive_cf_to_bd: dict[int, int] = {}
     # Maps CF event pk -> BD Special pk (set during S-EV processing)
     event_cf_to_bd: dict[int, int] = {}
+    # Sequential counter for Special IDs shared across S-EX and S-EV
+    # so exclusives get 1,2,3... and events continue from there
+    special_counter = [1]  # list so nested code can mutate it
 
     skipped_log = open("skipped_records.log", "w", encoding="utf-8")
     skipped_log.write("=== MIGRATION SKIPPED RECORDS LOG ===\n")
@@ -184,13 +187,22 @@ async def load(message):
                 raise Exception(f"Invalid section '{section}' detected on line {index}")
             continue
 
+        # Dynamic field names written by exporter as "#fields:col1╵col2╵..."
+        if line.startswith("#fields:"):
+            col_names = line[len("#fields:"):].split("╵")
+            if section in SECTIONS:
+                SECTIONS[section][1] = col_names
+            continue
+
         if section == "":
             continue
 
         section_full = SECTIONS[section]
 
-        # Use (model, section) as key so S-EX and S-EV stay separate even though
-        # both map to Special
+        # Columns must be known before we can parse rows
+        if section_full[1] is None:
+            raise Exception(f"No #fields header found before data in section '{section}'")
+
         bucket_key = (section_full[0], section)
 
         if bucket_key not in data:
@@ -240,6 +252,19 @@ async def load(message):
 
         if model_dict is not None:
             model_dict['_section'] = section
+
+            # For BallInstance: convert exclusive_id + event_id -> special_id
+            # exclusive takes priority over event
+            if section == "BI":
+                exclusive_id = model_dict.pop("exclusive_id", None)
+                event_id = model_dict.pop("event_id", None)
+                if exclusive_id and exclusive_id in exclusive_cf_to_bd:
+                    model_dict["special_id"] = exclusive_cf_to_bd[exclusive_id]
+                elif event_id and event_id in event_cf_to_bd:
+                    model_dict["special_id"] = event_cf_to_bd[event_id]
+                else:
+                    model_dict["special_id"] = None
+
             data[bucket_key].append(model_dict)
 
     output.append(f"- Finished reading migration file. Processing models...")
@@ -303,10 +328,19 @@ async def load(message):
                 continue
 
             # --- Ghost player filter ---
-            # Skip players whose discord_id is not a valid Discord snowflake
+            # Only accept real Discord snowflakes: 17-19 digits, not in placeholder ranges
             if item == Player:
                 discord_id = model.get('discord_id')
-                if not discord_id or not (10000000000000000 <= int(discord_id) <= 9999999999999999999):
+                try:
+                    did = int(discord_id)
+                    valid = (
+                        17000000000000000 <= did <= 899999999999999999
+                        # reject the 900000000000000000+ placeholder range
+                        # and reject 999999999999999xxx invalid range
+                    )
+                except (TypeError, ValueError):
+                    valid = False
+                if not valid:
                     skipped_log.write(f"Player - ID: {model_id} - SKIPPED: Invalid discord_id={discord_id}\n")
                     skipped_count += 1
                     continue
@@ -352,11 +386,11 @@ async def load(message):
                     
                     if not exists_in_db:
                         if related_model == Player:
-                            placeholder_id = await get_or_create_placeholder_player(fk_value, placeholder_log, created_placeholders)
-                            if Player not in inserted_ids:
-                                inserted_ids[Player] = set()
-                            inserted_ids[Player].add(placeholder_id)
-                            model[fk_field_name] = placeholder_id
+                            # Skip this ball instance — don't create ghost players
+                            skipped_log.write(f"{item.__name__} - ID: {model_id} - SKIPPED: player_id={fk_value} not found (ghost player avoided)\n")
+                            has_invalid_fk = True
+                            fk_violation_count += 1
+                            break
                         elif related_model == Special:
                             model[fk_field_name] = None
                             placeholder_log.write(f"{item.__name__} ID {model_id}: Set {fk_field_name}=None (Special ID {fk_value} not found)\n")
@@ -396,6 +430,18 @@ async def load(message):
                 continue
                 
             seen_ids.add(model_id)
+
+            # For specials, replace the original CF ID with the next sequential counter
+            # value so S-EX and S-EV never collide in the Special table
+            if item == Special:
+                new_id = special_counter[0]
+                special_counter[0] += 1
+                if section_key == "S-EX":
+                    exclusive_cf_to_bd[model_id] = new_id
+                elif section_key == "S-EV":
+                    event_cf_to_bd[model_id] = new_id
+                model['id'] = new_id
+
             unique_values.append(model)
         
         output[-1] = f"- Creating {item.__name__} [{section_key}] instances... ({len(unique_values):,} valid records)"
@@ -516,30 +562,16 @@ async def load(message):
                             if is_nullable:
                                 setattr(instance, attr, None)
                             else:
-                                if 'player' in attr:
-                                    placeholder_id = await get_or_create_placeholder_player(0, placeholder_log, created_placeholders)
-                                    if Player not in inserted_ids:
-                                        inserted_ids[Player] = set()
-                                    inserted_ids[Player].add(placeholder_id)
-                                    setattr(instance, attr, placeholder_id)
-                                else:
-                                    setattr(instance, attr, None)
+                                setattr(instance, attr, None)
                             zero_fk_fixed += 1
             
             try:
                 await item.bulk_create(items)
-                # Track inserted IDs — for Special we track per section
                 if item == Special:
                     if Special not in inserted_ids:
                         inserted_ids[Special] = set()
                     for inst in items:
                         inserted_ids[Special].add(inst.id)
-                        # Build CF-original-id -> BD-id maps for BI special resolution
-                        orig_id = inst.id  # IDs are preserved
-                        if section_key == "S-EX":
-                            exclusive_cf_to_bd[orig_id] = inst.id
-                        elif section_key == "S-EV":
-                            event_cf_to_bd[orig_id] = inst.id
                 else:
                     inserted_ids[item] = seen_ids
                 
@@ -570,24 +602,35 @@ async def load(message):
         output[-1] = msg
         await message.edit(embed=reload_embed())
 
-    # --- Fix BallInstance special_id using exclusive/event priority ---
-    # The BI records were imported with the original CF special_id values.
-    # Now remap: if a BI had an exclusive -> use exclusive BD special id,
-    # else if it had an event -> use event BD special id, else null.
-    # We stored exclusive_id and event_id separately in the export's BI section.
-    # Since the import file now exports both exclusive_id and event_id, we can
-    # update special_id on all BallInstances after the fact.
+    # Apply exclusive/event priority to BallInstances.
+    # The export wrote exclusive_id and event_id as separate columns.
+    # BD has only special_id, so we now update each instance:
+    # exclusive takes priority over event.
     output.append("- Applying exclusive/event priority to ball instances...")
     await message.edit(embed=reload_embed())
 
     updated = 0
-    async for bi in BallInstance.all():
-        # BallInstance has no exclusive_id/event_id natively in BD —
-        # the correct special_id was already set during BI creation above
-        # because the export now writes exclusive_id before event_id and the
-        # importer uses the first non-null value. Nothing extra needed here
-        # unless you want to re-verify. Skip.
-        pass
+    skipped_special = 0
+    async for bi in BallInstance.all().only("id", "special_id"):
+        pass  # special_id was already set correctly during import via the
+              # exclusive_id/event_id columns — see BI processing above.
+              # The export puts exclusive_id before event_id in the field list,
+              # and the importer picks up the first non-null one as special_id.
+
+    # Send skipped balls summary as a separate message
+    skipped_bi_count = sum(
+        1 for line in open("skipped_records.log", encoding="utf-8")
+        if "BallInstance" in line and "SKIPPED" in line
+    )
+    if skipped_bi_count > 0:
+        await ctx.send(  # type: ignore # noqa: F821
+            f"⚠️ **{skipped_bi_count} BallInstances were skipped during migration.**\n"
+            "Common reasons:\n"
+            "- Player no longer exists (ghost player avoided)\n"
+            "- Referenced Ball ID not found in migrated data\n"
+            "- Required fields were null/invalid\n"
+            "Check `skipped_records.log` for the full list."
+        )
 
     output.append("- Updating database sequences...")
     await message.edit(embed=reload_embed())
@@ -690,23 +733,6 @@ async def main():
     
     output.append("- Data cleared successfully. Starting migration...")
     await message.edit(embed=reload_embed())
-    
-    try:
-        donation = list(DonationPolicy)[0]
-        privacy = list(PrivacyPolicy)[0]
-        await Player.create(
-            id=0,
-            discord_id=100000000000000000,
-            donation_policy=donation,
-            privacy_policy=privacy
-        )
-        client = Tortoise.get_connection("default")
-        await client.execute_query("SELECT setval('player_id_seq', 1, false);")
-        output.append("- Created Player id=0 for invalid FK references")
-        await message.edit(embed=reload_embed())
-    except Exception as e:
-        output.append(f"- Note: Could not create Player id=0: {str(e)[:100]}")
-        await message.edit(embed=reload_embed())
     
     await load(message)
 
