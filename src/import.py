@@ -315,16 +315,13 @@ async def load(message):
                 continue
 
             # --- Ghost player filter ---
-            # Only accept real Discord snowflakes: 17-19 digits, not in placeholder ranges
+            # Accept Discord snowflakes: 17-19 digits, reject known placeholder ranges
             if item == Player:
                 discord_id = model.get('discord_id')
                 try:
                     did = int(discord_id)
-                    valid = (
-                        17000000000000000 <= did <= 899999999999999999
-                        # reject the 900000000000000000+ placeholder range
-                        # and reject 999999999999999xxx invalid range
-                    )
+                    # Valid: 17-19 digits, NOT in 900000000000000000+ range
+                    valid = 17 <= len(str(did)) <= 19 and did < 900000000000000000
                 except (TypeError, ValueError):
                     valid = False
                 if not valid:
