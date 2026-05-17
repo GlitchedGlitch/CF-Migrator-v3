@@ -134,8 +134,11 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
     "P": {
         "model": Player,
         "process": "Player",
-        "values": ["discord_id"],
-        "defaults": {"donationPolicy": 1, "privacyPolicy": 1},
+        "values": ["discord_id", "donationPolicy", "privacyPolicy"],
+        "rename": {
+            "donationPolicy": "donation_policy",
+            "privacyPolicy": "privacy_policy",
+        },
     },
     "BI": {
         "model": CarInstance,
@@ -173,8 +176,9 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
     "GC": {
         "model": GuildConfig,
         "process": "GuildConfig",
-        "values": ["guild_id"],
-        "defaults": {"spawnChannel": None, "enabled": True},
+        "values": ["guild_id", "enabled"],
+        "rename": {"spawnChannel": "spawn_channel"},
+        "defaults": {"spawnChannel": None},
     },
     "F": {
         "model": Friendship,
