@@ -402,8 +402,10 @@ async def load(message):
                     if hasattr(field_obj, 'null') and not field_obj.null:
                         if field_name in ('country', 'short_name', 'capacity_name', 'capacity_description', 'credits', 'catch_phrase'):
                             model[field_name] = 'Unknown'
-                        elif field_name in ('enabled', 'tradeable', 'hidden'):
+                        elif field_name in ('enabled', 'tradeable'):
                             model[field_name] = True
+                        elif field_name == 'hidden':
+                            model[field_name] = False
                         elif field_name == 'favorite':
                             model[field_name] = False
                         elif field_name in ('health', 'attack', 'rarity', 'health_bonus', 'attack_bonus'):
