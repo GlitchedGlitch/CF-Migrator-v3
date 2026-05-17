@@ -81,7 +81,6 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
             "endDate": None,
             "emoji": None,
             "tradeable": True,
-            "hidden": False,
         },
     },
     "B": {
@@ -355,7 +354,7 @@ async def main():
     # Send file to Discord so it can be downloaded and dropped into the BallsDex folder
     try:
         await ctx.send(  # type: ignore # noqa: F821
-            "📦 **Migration file — drag this into your BallsDex bot folder:**",
+            "Migration file — drag this into your BallsDex bot folder:",
             file=discord.File(path),
         )
     except discord.HTTPException:
