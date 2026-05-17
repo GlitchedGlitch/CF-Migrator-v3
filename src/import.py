@@ -262,6 +262,9 @@ async def load(message):
             if section == "BI":
                 excl = model_dict.pop("exclusive_id", None)
                 evnt = model_dict.pop("event_id", None)
+                # Values may be int or string "None"
+                excl = None if excl in (None, "None", "") else safe_int(excl)
+                evnt = None if evnt in (None, "None", "") else safe_int(evnt)
                 if excl and excl in exclusive_cf_to_bd:
                     model_dict["special_id"] = exclusive_cf_to_bd[excl]
                 elif evnt and evnt in event_cf_to_bd:
@@ -414,8 +417,10 @@ async def load(message):
                     if hasattr(field_obj, 'null') and not field_obj.null:
                         if field_name in ('country', 'short_name', 'capacity_name', 'capacity_description', 'credits', 'catch_phrase'):
                             model[field_name] = 'Unknown'
-                        elif field_name in ('enabled', 'tradeable', 'hidden', 'favorite'):
+                        elif field_name in ('enabled', 'tradeable', 'hidden'):
                             model[field_name] = True
+                        elif field_name == 'favorite':
+                            model[field_name] = False
                         elif field_name in ('health', 'attack', 'rarity', 'health_bonus', 'attack_bonus'):
                             model[field_name] = 0
                         elif field_name == 'emoji_id':
