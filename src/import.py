@@ -70,8 +70,8 @@ def safe_date(value):
 # ----------- ChatGPT Ends Here -------------
 
 SECTIONS = {
-    "R": [Regime, ["id", "background", "name"]],
-    "E": [Economy, ["id", "icon", "name"]],
+    "R": [Regime, None],
+    "E": [Economy, None],
     "S-EX": [Special, None],
     "S-EV": [Special, None],
     "B": [Ball, None],
@@ -257,21 +257,6 @@ async def load(message):
 
         if model_dict is not None:
             model_dict['_section'] = section
-
-            # BI: convert exclusive_id + event_id -> special_id (exclusive priority)
-            if section == "BI":
-                excl = model_dict.pop("exclusive_id", None)
-                evnt = model_dict.pop("event_id", None)
-                # Values may be int or string "None"
-                excl = None if excl in (None, "None", "") else safe_int(excl)
-                evnt = None if evnt in (None, "None", "") else safe_int(evnt)
-                if excl and excl in exclusive_cf_to_bd:
-                    model_dict["special_id"] = exclusive_cf_to_bd[excl]
-                elif evnt and evnt in event_cf_to_bd:
-                    model_dict["special_id"] = event_cf_to_bd[evnt]
-                else:
-                    model_dict["special_id"] = None
-
             data[bucket_key].append(model_dict)
 
     output.append(f"- Finished reading migration file. Processing models...")
@@ -446,6 +431,19 @@ async def load(message):
                 continue
                 
             seen_ids.add(model_id)
+
+            # BI: convert exclusive_id + event_id -> special_id after specials are loaded
+            if section_key == "BI":
+                excl = model.pop("exclusive_id", None)
+                evnt = model.pop("event_id", None)
+                excl = None if excl in (None, "None", "") else safe_int(excl)
+                evnt = None if evnt in (None, "None", "") else safe_int(evnt)
+                if excl and excl in exclusive_cf_to_bd:
+                    model["special_id"] = exclusive_cf_to_bd[excl]
+                elif evnt and evnt in event_cf_to_bd:
+                    model["special_id"] = event_cf_to_bd[evnt]
+                else:
+                    model["special_id"] = None
 
             # For specials, replace the original CF ID with the next sequential counter
             # value so S-EX and S-EV never collide in the Special table
