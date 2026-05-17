@@ -72,12 +72,12 @@ def safe_date(value):
 SECTIONS = {
     "R": [Regime, ["id", "background", "name"]],
     "E": [Economy, ["id", "icon", "name"]],
-    "S-EX": [Special, ["id", "catch_phrase", "emoji", "background", "name", "rarity"]],
-    "S-EV": [Special, ["id", "background", "catch_phrase", "emoji", "end_date", "hidden", "name", "rarity", "start_date", "tradeable"]],
-    "B": [Ball, ["id", "regime_id", "economy_id", "country", "short_name", "catch_names", "health", "attack", "rarity", "emoji_id", "wild_card", "collection_card", "credits", "capacity_name", "capacity_description", "enabled", "tradeable"]],
-    "BI": [BallInstance, ["id", "ball_id", "catch_date", "special_id", "favorite", "attack_bonus", "player_id", "server_id", "spawned_time", "trade_player_id", "tradeable", "health_bonus"]],
-    "P": [Player, ["id", "discord_id", "donation_policy", "privacy_policy"]],
-    "GC": [GuildConfig, ["id", "enabled", "guild_id", "spawn_channel"]],
+    "S-EX": [Special, None],
+    "S-EV": [Special, None],
+    "B": [Ball, None],
+    "BI": [BallInstance, None],
+    "P": [Player, None],
+    "GC": [GuildConfig, None],
     "F": [Friendship, ["id", "player1_id", "player2_id", "since"]],
     "BU": [BlacklistedID, ["id", "date", "discord_id", "reason"]],
     "BG": [BlacklistedGuild, ["id", "date", "discord_id", "reason"]],
@@ -178,20 +178,16 @@ async def load(message):
             output[-1] = f"- Reading migration file... (line {index:,}/{len(lines):,})"
             await message.edit(embed=reload_embed())
 
-        if line.startswith("//") or line.startswith("#") or line == "":
+        if line.startswith("//") or line == "":
             continue
 
-        if line.startswith(":"):
-            section = line[1:]
-            if section not in SECTIONS:
-                raise Exception(f"Invalid section '{section}' detected on line {index}")
-            continue
-
-        # Dynamic field names written by exporter as "#fields:col1╵col2╵..."
         if line.startswith("#fields:"):
             col_names = line[len("#fields:"):].split("╵")
             if section in SECTIONS:
                 SECTIONS[section][1] = col_names
+            continue
+
+        if line.startswith("#"):
             continue
 
         if section == "":
@@ -396,26 +392,24 @@ async def load(message):
                 if field_value is None and field_name in fields_map:
                     field_obj = fields_map[field_name]
                     if hasattr(field_obj, 'null') and not field_obj.null:
-                        # For Ball and Player, don't skip — set sensible defaults
-                        if item in (Ball, Player):
-                            if field_name in ('country', 'short_name'):
-                                model[field_name] = 'Unknown'
-                                defaults_set.append(f"{field_name}='Unknown'")
-                            elif field_name == 'regime_id':
-                                # Use first regime if available
-                                first_regime = await Regime.all().first()
-                                if first_regime:
-                                    model[field_name] = first_regime.pk
-                                else:
-                                    model[field_name] = 1  # fallback
-                            elif field_name == 'health':
-                                model[field_name] = 0
-                                defaults_set.append("health=0")
-                            elif field_name in ('enabled', 'tradeable'):
-                                model[field_name] = True
-                            else:
-                                null_fields.append(field_name)
-                                skip_record = True
+                        if field_name in ('country', 'short_name', 'capacity_name', 'capacity_description', 'credits', 'catch_phrase'):
+                            model[field_name] = 'Unknown'
+                        elif field_name in ('enabled', 'tradeable', 'hidden'):
+                            model[field_name] = True
+                        elif field_name in ('health', 'attack', 'rarity', 'health_bonus', 'attack_bonus'):
+                            model[field_name] = 0
+                        elif field_name == 'emoji_id':
+                            model[field_name] = 1234567890123456789
+                        elif field_name == 'regime_id':
+                            first = await Regime.all().first()
+                            model[field_name] = first.pk if first else 1
+                        elif field_name == 'donation_policy':
+                            model[field_name] = list(DonationPolicy)[0]
+                        elif field_name == 'privacy_policy':
+                            model[field_name] = list(PrivacyPolicy)[0]
+                        elif field_name == 'guild_id':
+                            null_fields.append(field_name)
+                            skip_record = True
                         else:
                             null_fields.append(field_name)
                             skip_record = True
