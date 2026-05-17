@@ -181,6 +181,12 @@ async def load(message):
         if line.startswith("//") or line == "":
             continue
 
+        if line.startswith(":"):
+            section = line[1:]
+            if section not in SECTIONS:
+                raise Exception(f"Invalid section '{section}' detected on line {index}")
+            continue
+
         if line.startswith("#fields:"):
             col_names = line[len("#fields:"):].split("╵")
             if section in SECTIONS:
@@ -221,7 +227,9 @@ async def load(message):
                 continue
 
             if value not in fields:
-                raise Exception(f"Unknown value '{value}' detected on line {index:,} - attribute {attribute_index:,} in {section_full[0].__name__} object")
+                # Skip unknown fields silently (e.g. exclusive_id/event_id not in BD model)
+                model_dict[value] = line_data if line_data not in ("", "None") else None
+                continue
 
             if line_data == "None":
                 line_data = None
@@ -249,6 +257,18 @@ async def load(message):
 
         if model_dict is not None:
             model_dict['_section'] = section
+
+            # BI: convert exclusive_id + event_id -> special_id (exclusive priority)
+            if section == "BI":
+                excl = model_dict.pop("exclusive_id", None)
+                evnt = model_dict.pop("event_id", None)
+                if excl and excl in exclusive_cf_to_bd:
+                    model_dict["special_id"] = exclusive_cf_to_bd[excl]
+                elif evnt and evnt in event_cf_to_bd:
+                    model_dict["special_id"] = event_cf_to_bd[evnt]
+                else:
+                    model_dict["special_id"] = None
+
             data[bucket_key].append(model_dict)
 
     output.append(f"- Finished reading migration file. Processing models...")
