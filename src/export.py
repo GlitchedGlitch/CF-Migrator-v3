@@ -27,16 +27,14 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
     "R": {
         "model": CarType,
         "process": "CarType",
-        "values": [
-            "name",
-        ],
+        "values": ["name", "image"],
+        "rename": {"image": "background"},
     },
     "E": {
         "model": Country,
         "process": "Country",
-        "values": [
-            "name",
-        ],
+        "values": ["name", "image"],
+        "rename": {"image": "icon"},
     },
     "S-EX": {
         "model": Exclusive,
