@@ -436,14 +436,30 @@ async def load(message):
 
             # Map CF policy enum ints to BD policy enum values
             if item == Player:
-                DONATION_MAP = {1: 1, 2: 2, 3: 3, 4: 4}  # alwaysAccept/requestApproval/alwaysDeny/friendsOnly
-                PRIVACY_MAP = {1: 1, 2: 2, 3: 3}  # openInv/closedInv/friendsOnly
                 dp = model.get("donation_policy")
                 pp = model.get("privacy_policy")
-                if dp is not None:
-                    model["donation_policy"] = list(DonationPolicy)[DONATION_MAP.get(int(dp), 1) - 1]
-                if pp is not None:
-                    model["privacy_policy"] = list(PrivacyPolicy)[PRIVACY_MAP.get(int(pp), 1) - 1]
+                donation_map = {
+                    1: "ALWAYS_ACCEPT",
+                    2: "REQUEST_APPROVAL",
+                    3: "ALWAYS_DENY",
+                    4: "FRIENDS_ONLY",
+                }
+                privacy_map = {
+                    1: "ALLOW_ALL",
+                    2: "DENY",
+                    3: "FRIENDS",
+                    4: "SAME_SERVER",
+                }
+                try:
+                    if dp is not None:
+                        model["donation_policy"] = DonationPolicy[donation_map.get(int(dp), "ALWAYS_ACCEPT")]
+                except (KeyError, AttributeError):
+                    model["donation_policy"] = list(DonationPolicy)[0]
+                try:
+                    if pp is not None:
+                        model["privacy_policy"] = PrivacyPolicy[privacy_map.get(int(pp), "ALLOW_ALL")]
+                except (KeyError, AttributeError):
+                    model["privacy_policy"] = list(PrivacyPolicy)[0]
 
             # BI: convert exclusive_id + event_id -> special_id after specials are loaded
             if section_key == "BI":
