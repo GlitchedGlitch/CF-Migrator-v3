@@ -78,7 +78,7 @@ SECTIONS = {
     "BI": [BallInstance, None],
     "P": [Player, None],
     "GC": [GuildConfig, None],
-    "F": [Friendship, ["id", "player1_id", "player2_id", "since"]],
+    "F": [Friendship, None],
     "BU": [BlacklistedID, ["id", "date", "discord_id", "reason"]],
     "BG": [BlacklistedGuild, ["id", "date", "discord_id", "reason"]],
     "T": [Trade, ["id", "date", "player1_id", "player2_id"]],
@@ -433,6 +433,17 @@ async def load(message):
                 continue
                 
             seen_ids.add(model_id)
+
+            # Map CF policy enum ints to BD policy enum values
+            if item == Player:
+                DONATION_MAP = {1: 1, 2: 2, 3: 3, 4: 4}  # alwaysAccept/requestApproval/alwaysDeny/friendsOnly
+                PRIVACY_MAP = {1: 1, 2: 2, 3: 3}  # openInv/closedInv/friendsOnly
+                dp = model.get("donation_policy")
+                pp = model.get("privacy_policy")
+                if dp is not None:
+                    model["donation_policy"] = list(DonationPolicy)[DONATION_MAP.get(int(dp), 1) - 1]
+                if pp is not None:
+                    model["privacy_policy"] = list(PrivacyPolicy)[PRIVACY_MAP.get(int(pp), 1) - 1]
 
             # BI: convert exclusive_id + event_id -> special_id after specials are loaded
             if section_key == "BI":
