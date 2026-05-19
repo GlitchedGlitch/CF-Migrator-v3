@@ -25,7 +25,7 @@ await ctx.invoke(
 
 ## Transferring to Ballsdex
 
-Once your file is generated, you need to move it inside of your Ballsdex bot's folder. You should also migrate your configuration file over to the Ballsdex yaml format and move your images from `/static/uploads` to `/admin_panel/media`.
+Once your file is generated, you'll need to delete all the bot files and data but keep your images to transfer them later. Download the Ballsdex files and put them into the folder. After that, put the migration.txt file you got from exporting the data on the bot files. You should also migrate your configuration file over to the Ballsdex yaml format and move your images from `/static/uploads` to `/admin_panel/media`.
 
 ## Importing data to Ballsdex
 
