@@ -70,15 +70,15 @@ def safe_date(value):
 # ----------- ChatGPT Ends Here -------------
 
 SECTIONS = {
-    "R": [Regime, ["id", "background", "name"]],
-    "E": [Economy, ["id", "icon", "name"]],
-    "S-EX": [Special, ["id", "catch_phrase", "emoji", "background", "name", "rarity"]],
-    "S-EV": [Special, ["id", "background", "catch_phrase", "emoji", "end_date", "hidden", "name", "rarity", "start_date", "tradeable"]],
-    "B": [Ball, ["id", "regime_id", "economy_id", "country", "short_name", "catch_names", "health", "attack", "rarity", "emoji_id", "wild_card", "collection_card", "credits", "capacity_name", "capacity_description", "enabled", "tradeable"]],
-    "BI": [BallInstance, ["id", "ball_id", "catch_date", "special_id", "favorite", "attack_bonus", "player_id", "server_id", "spawned_time", "trade_player_id", "tradeable", "health_bonus"]],
-    "P": [Player, ["id", "discord_id", "donation_policy", "privacy_policy"]],
-    "GC": [GuildConfig, ["id", "enabled", "guild_id", "spawn_channel"]],
-    "F": [Friendship, ["id", "player1_id", "player2_id", "since"]],
+    "R": [Regime, None],
+    "E": [Economy, None],
+    "S-EX": [Special, None],
+    "S-EV": [Special, None],
+    "B": [Ball, None],
+    "BI": [BallInstance, None],
+    "P": [Player, None],
+    "GC": [GuildConfig, None],
+    "F": [Friendship, None],
     "BU": [BlacklistedID, ["id", "date", "discord_id", "reason"]],
     "BG": [BlacklistedGuild, ["id", "date", "discord_id", "reason"]],
     "T": [Trade, ["id", "date", "player1_id", "player2_id"]],
@@ -178,7 +178,7 @@ async def load(message):
             output[-1] = f"- Reading migration file... (line {index:,}/{len(lines):,})"
             await message.edit(embed=reload_embed())
 
-        if line.startswith("//") or line.startswith("#") or line == "":
+        if line.startswith("//") or line == "":
             continue
 
         if line.startswith(":"):
@@ -187,11 +187,13 @@ async def load(message):
                 raise Exception(f"Invalid section '{section}' detected on line {index}")
             continue
 
-        # Dynamic field names written by exporter as "#fields:col1╵col2╵..."
         if line.startswith("#fields:"):
             col_names = line[len("#fields:"):].split("╵")
             if section in SECTIONS:
                 SECTIONS[section][1] = col_names
+            continue
+
+        if line.startswith("#"):
             continue
 
         if section == "":
@@ -225,7 +227,9 @@ async def load(message):
                 continue
 
             if value not in fields:
-                raise Exception(f"Unknown value '{value}' detected on line {index:,} - attribute {attribute_index:,} in {section_full[0].__name__} object")
+                # Skip unknown fields silently (e.g. exclusive_id/event_id not in BD model)
+                model_dict[value] = line_data if line_data not in ("", "None") else None
+                continue
 
             if line_data == "None":
                 line_data = None
@@ -396,26 +400,28 @@ async def load(message):
                 if field_value is None and field_name in fields_map:
                     field_obj = fields_map[field_name]
                     if hasattr(field_obj, 'null') and not field_obj.null:
-                        # For Ball and Player, don't skip — set sensible defaults
-                        if item in (Ball, Player):
-                            if field_name in ('country', 'short_name'):
-                                model[field_name] = 'Unknown'
-                                defaults_set.append(f"{field_name}='Unknown'")
-                            elif field_name == 'regime_id':
-                                # Use first regime if available
-                                first_regime = await Regime.all().first()
-                                if first_regime:
-                                    model[field_name] = first_regime.pk
-                                else:
-                                    model[field_name] = 1  # fallback
-                            elif field_name == 'health':
-                                model[field_name] = 0
-                                defaults_set.append("health=0")
-                            elif field_name in ('enabled', 'tradeable'):
-                                model[field_name] = True
-                            else:
-                                null_fields.append(field_name)
-                                skip_record = True
+                        if field_name in ('country', 'short_name', 'capacity_name', 'capacity_description', 'credits', 'catch_phrase'):
+                            model[field_name] = 'Unknown'
+                        elif field_name in ('enabled', 'tradeable'):
+                            model[field_name] = True
+                        elif field_name == 'hidden':
+                            model[field_name] = False
+                        elif field_name == 'favorite':
+                            model[field_name] = False
+                        elif field_name in ('health', 'attack', 'rarity', 'health_bonus', 'attack_bonus'):
+                            model[field_name] = 0
+                        elif field_name == 'emoji_id':
+                            model[field_name] = 1234567890123456789
+                        elif field_name == 'regime_id':
+                            first = await Regime.all().first()
+                            model[field_name] = first.pk if first else 1
+                        elif field_name == 'donation_policy':
+                            model[field_name] = list(DonationPolicy)[0]
+                        elif field_name == 'privacy_policy':
+                            model[field_name] = list(PrivacyPolicy)[0]
+                        elif field_name == 'guild_id':
+                            null_fields.append(field_name)
+                            skip_record = True
                         else:
                             null_fields.append(field_name)
                             skip_record = True
@@ -427,6 +433,46 @@ async def load(message):
                 continue
                 
             seen_ids.add(model_id)
+
+            # Map CF policy enum ints to BD policy enum values
+            if item == Player:
+                dp = model.get("donation_policy")
+                pp = model.get("privacy_policy")
+                donation_map = {
+                    1: "ALWAYS_ACCEPT",
+                    2: "REQUEST_APPROVAL",
+                    3: "ALWAYS_DENY",
+                    4: "FRIENDS_ONLY",
+                }
+                privacy_map = {
+                    1: "ALLOW_ALL",
+                    2: "DENY",
+                    3: "FRIENDS",
+                    4: "SAME_SERVER",
+                }
+                try:
+                    if dp is not None:
+                        model["donation_policy"] = DonationPolicy[donation_map.get(int(dp), "ALWAYS_ACCEPT")]
+                except (KeyError, AttributeError):
+                    model["donation_policy"] = list(DonationPolicy)[0]
+                try:
+                    if pp is not None:
+                        model["privacy_policy"] = PrivacyPolicy[privacy_map.get(int(pp), "ALLOW_ALL")]
+                except (KeyError, AttributeError):
+                    model["privacy_policy"] = list(PrivacyPolicy)[0]
+
+            # BI: convert exclusive_id + event_id -> special_id after specials are loaded
+            if section_key == "BI":
+                excl = model.pop("exclusive_id", None)
+                evnt = model.pop("event_id", None)
+                excl = None if excl in (None, "None", "") else safe_int(excl)
+                evnt = None if evnt in (None, "None", "") else safe_int(evnt)
+                if excl and excl in exclusive_cf_to_bd:
+                    model["special_id"] = exclusive_cf_to_bd[excl]
+                elif evnt and evnt in event_cf_to_bd:
+                    model["special_id"] = event_cf_to_bd[evnt]
+                else:
+                    model["special_id"] = None
 
             # For specials, replace the original CF ID with the next sequential counter
             # value so S-EX and S-EV never collide in the Special table
