@@ -345,10 +345,12 @@ async def load(message):
                 fk_value = model.get(fk_field_name)
                 
                 if fk_value is None:
-                    base_field_name = fk_field_name[:-3] if fk_field_name.endswith('_id') else fk_field_name
+                    if not fk_field_name.endswith('_id'):
+                        continue  # relation accessor key, not a real column â€” skip safely
+                    base_field_name = fk_field_name[:-3]
                     field_obj = fields_map.get(base_field_name)
                     is_nullable = field_obj is not None and getattr(field_obj, 'null', False)
-                    if not is_nullable:
+                    if not is_nullable and base_field_name in fields_map:
                         skipped_log.write(
                             f"{item.__name__} - ID: {model_id} - SKIPPED: "
                             f"Required FK {fk_field_name} is null\n"
