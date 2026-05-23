@@ -346,7 +346,9 @@ async def load(message):
                 
                 if fk_value is None:
                     if not fk_field_name.endswith('_id'):
-                        continue  # relation accessor key, not a real column â€” skip safely
+                        continue  # relation accessor, not a real column
+                    if fk_field_name not in model:
+                        continue  # key absent from export entirely â€” not our problem here
                     base_field_name = fk_field_name[:-3]
                     field_obj = fields_map.get(base_field_name)
                     is_nullable = field_obj is not None and getattr(field_obj, 'null', False)
