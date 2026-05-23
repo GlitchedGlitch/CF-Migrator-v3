@@ -26,7 +26,7 @@ from ballsdex.core.models import (
 )
 from ballsdex.core.models import DonationPolicy, PrivacyPolicy
 
-__version__ = "1.0.4-cleaned"
+__version__ = "1.0.3-cleaned"
 
 # ----------- ChatGPT Starts Here -------------
 def safe_int(value):
@@ -343,8 +343,7 @@ async def load(message):
             has_invalid_fk = False
             for fk_field_name, related_model in fk_fields.items():
                 fk_value = model.get(fk_field_name)
-
-                # --- FIX: null FK must be checked for nullability before skipping ---
+                
                 if fk_value is None:
                     base_field_name = fk_field_name[:-3] if fk_field_name.endswith('_id') else fk_field_name
                     field_obj = fields_map.get(base_field_name)
