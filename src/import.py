@@ -338,28 +338,25 @@ async def load(message):
                 skipped_count += 1
                 duplicate_count += 1
                 continue
-            
+
+            # TradeObject: ballinstance_id is a required (NOT NULL) FK.
+            # The generic FK loop skips None values, and fields_map won't contain
+            # the '_id' suffixed key, so both null-checks miss it.  Catch it here.
+            if item == TradeObject and model.get('ballinstance_id') is None:
+                skipped_log.write(
+                    f"TradeObject - ID: {model_id} - SKIPPED: "
+                    f"ballinstance_id is null (BallInstance was likely skipped)\n"
+                )
+                skipped_count += 1
+                fk_violation_count += 1
+                continue
+
             # Validate FK references
             has_invalid_fk = False
             for fk_field_name, related_model in fk_fields.items():
                 fk_value = model.get(fk_field_name)
                 
                 if fk_value is None:
-                    if not fk_field_name.endswith('_id'):
-                        continue  # relation accessor, not a real column
-                    if fk_field_name not in model:
-                        continue  # key absent from export entirely â€” not our problem here
-                    base_field_name = fk_field_name[:-3]
-                    field_obj = fields_map.get(base_field_name)
-                    is_nullable = field_obj is not None and getattr(field_obj, 'null', False)
-                    if not is_nullable and base_field_name in fields_map:
-                        skipped_log.write(
-                            f"{item.__name__} - ID: {model_id} - SKIPPED: "
-                            f"Required FK {fk_field_name} is null\n"
-                        )
-                        has_invalid_fk = True
-                        fk_violation_count += 1
-                        break
                     continue
                 
                 if fk_value == 0:
