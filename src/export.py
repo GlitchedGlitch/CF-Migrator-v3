@@ -27,14 +27,18 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
     "R": {
         "model": CarType,
         "process": "CarType",
-        "values": ["name", "image"],
-        "rename": {"image": "background"},
+        "values": [
+            "name",
+            "image",
+        ],
     },
     "E": {
         "model": Country,
         "process": "Country",
-        "values": ["name", "image"],
-        "rename": {"image": "icon"},
+        "values": [
+            "name",
+            "image",
+        ],
     },
     "S-EX": {
         "model": Exclusive,
@@ -43,13 +47,7 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
             "name",
             "image",
             "rarity",
-            "catchPhrase",
-            "emoji",
         ],
-        "rename": {
-            "image": "background",
-            "catchPhrase": "catch_phrase",
-        },
         "defaults": {
             "catchPhrase": None,
             "emoji": None,
@@ -62,25 +60,14 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
             "name",
             "rarity",
             "card",
-            "catchPhrase",
-            "startDate",
-            "endDate",
-            "emoji",
-            "tradeable",
-            "hidden",
         ],
-        "rename": {
-            "card": "background",
-            "catchPhrase": "catch_phrase",
-            "startDate": "start_date",
-            "endDate": "end_date",
-        },
         "defaults": {
             "catchPhrase": None,
             "startDate": None,
             "endDate": None,
             "emoji": None,
             "tradeable": True,
+            "hidden": False,
         },
     },
     "B": {
@@ -88,37 +75,17 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
         "process": "Car",
         "values": [
             "cartype_id",
-            "country_id",
             "fullName",
-            "shortName",
-            "catchNames",
             "weight",
             "horsepower",
             "rarity",
             "emoji",
-            "spawnPicture",
             "collectionPicture",
             "carCredits",
             "capacityName",
             "capacityDescription",
-            "enabled",
-            "tradeable",
+            "createdAt",
         ],
-        "rename": {
-            "cartype_id": "regime_id",
-            "country_id": "economy_id",
-            "fullName": "country",
-            "shortName": "short_name",
-            "catchNames": "catch_names",
-            "weight": "health",
-            "horsepower": "attack",
-            "emoji": "emoji_id",
-            "spawnPicture": "wild_card",
-            "collectionPicture": "collection_card",
-            "carCredits": "credits",
-            "capacityName": "capacity_name",
-            "capacityDescription": "capacity_description",
-        },
         "defaults": {
             "country_id": None,
             "shortName": None,
@@ -131,11 +98,8 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
     "P": {
         "model": Player,
         "process": "Player",
-        "values": ["discord_id", "donationPolicy", "privacyPolicy"],
-        "rename": {
-            "donationPolicy": "donation_policy",
-            "privacyPolicy": "privacy_policy",
-        },
+        "values": ["discord_id"],
+        "defaults": {"donationPolicy": 1, "privacyPolicy": 1},
     },
     "BI": {
         "model": CarInstance,
@@ -148,43 +112,25 @@ MIGRATIONS: dict[str, dict[str, Any]] = {
             "server",
             "exclusive_id",
             "event_id",
-            "weightBonus",
-            "horsepowerBonus",
-            "favorite",
-            "tradeable",
-            "trade_player_id",
         ],
-        "rename": {
-            "car_id": "ball_id",
-            "catchDate": "catch_date",
-            "spawnedTime": "spawned_time",
-            "server": "server_id",
-            "exclusive_id": "exclusive_id",
-            "event_id": "event_id",
-            "weightBonus": "health_bonus",
-            "horsepowerBonus": "attack_bonus",
-        },
         "defaults": {
             "trade_player_id": None,
             "favorite": False,
             "tradeable": True,
+            "weightBonus": 0,
+            "horsepowerBonus": 0,
         },
     },
     "GC": {
         "model": GuildConfig,
         "process": "GuildConfig",
-        "values": ["guild_id", "enabled"],
-        "rename": {"spawnChannel": "spawn_channel"},
-        "defaults": {"spawnChannel": None},
+        "values": ["guild_id"],
+        "defaults": {"spawnChannel": None, "enabled": True},
     },
     "F": {
         "model": Friendship,
         "process": "Friendship",
         "values": ["friender_id", "friended_id", "since"],
-        "rename": {
-            "friender_id": "player1_id",
-            "friended_id": "player2_id",
-        },
     },
     "BU": {
         "model": BlacklistedUser,
@@ -259,7 +205,6 @@ async def process(entry: str, migration) -> str:
     first_instance = True
     values = set(migration["values"] + ["id"])
     has_defaults = "defaults" in migration
-    rename = migration.get("rename", {})
 
     if has_defaults:
         values.update(list(migration["defaults"].keys()))
@@ -295,9 +240,6 @@ async def process(entry: str, migration) -> str:
 
         if first_instance:
             content.append(f":{entry}")
-            # Write renamed field order as a comment so the importer knows the column names
-            renamed_values = [rename.get(v, v) for v in values]
-            content.append(f"#fields:{'╵'.join(renamed_values)}")
             first_instance = False
 
         content.append("╵".join(fields))
