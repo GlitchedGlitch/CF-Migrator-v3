@@ -79,10 +79,10 @@ SECTIONS = {
     "P": [Player, None],
     "GC": [GuildConfig, None],
     "F": [Friendship, None],
-    "BU": [BlacklistedID, None],
-    "BG": [BlacklistedGuild, None],
-    "T": [Trade, None],
-    "TO": [TradeObject, None],
+    "BU": [BlacklistedID, ["id", "date", "discord_id", "reason"]],
+    "BG": [BlacklistedGuild, ["id", "date", "discord_id", "reason"]],
+    "T": [Trade, ["id", "date", "player1_id", "player2_id"]],
+    "TO": [TradeObject, ["id", "ballinstance_id", "player_id", "trade_id"]],
 }
 
 def read_bz2(path: str):
@@ -188,7 +188,7 @@ async def load(message):
             continue
 
         if line.startswith("#fields:"):
-            col_names = line[len("#fields:"):].split("╵")
+            col_names = line[len("#fields:"):].split("â•µ")
             if section in SECTIONS:
                 SECTIONS[section][1] = col_names
             continue
@@ -214,7 +214,7 @@ async def load(message):
         fields = section_full[0]._meta.fields_map
         attribute_index = 0
 
-        for value, line_data in zip(section_full[1], line.split("╵")):
+        for value, line_data in zip(section_full[1], line.split("â•µ")):
             attribute_index += 1
 
             if value == "id" and line_data == "":
@@ -233,9 +233,9 @@ async def load(message):
 
             if line_data == "None":
                 line_data = None
-            elif line_data == "🬀":
+            elif line_data == "ðŸ¬€":
                 line_data = True
-            elif line_data == "🬁":
+            elif line_data == "ðŸ¬":
                 line_data = False
 
             field_type = fields[value]
@@ -251,7 +251,7 @@ async def load(message):
                     line_data = safe_date(line_data)
 
             if isinstance(line_data, str):
-                line_data = line_data.replace("🮈", "\n")
+                line_data = line_data.replace("ðŸ®ˆ", "\n")
 
             model_dict[value] = line_data
 
@@ -270,8 +270,8 @@ async def load(message):
     processing_order = [
         (Regime, "R"),
         (Economy, "E"),
-        (Special, "S-EX"),   # Exclusives first — they get their natural IDs
-        (Special, "S-EV"),   # Events second — get next available IDs
+        (Special, "S-EX"),   # Exclusives first â€” they get their natural IDs
+        (Special, "S-EV"),   # Events second â€” get next available IDs
         (Ball, "B"),
         (Player, "P"),
         (BallInstance, "BI"),
@@ -345,6 +345,19 @@ async def load(message):
                 fk_value = model.get(fk_field_name)
                 
                 if fk_value is None:
+                    if not fk_field_name.endswith('_id'):
+                        continue  # relation accessor key, not a real column â€” skip safely
+                    base_field_name = fk_field_name[:-3]
+                    field_obj = fields_map.get(base_field_name)
+                    is_nullable = field_obj is not None and getattr(field_obj, 'null', False)
+                    if not is_nullable and base_field_name in fields_map:
+                        skipped_log.write(
+                            f"{item.__name__} - ID: {model_id} - SKIPPED: "
+                            f"Required FK {fk_field_name} is null\n"
+                        )
+                        has_invalid_fk = True
+                        fk_violation_count += 1
+                        break
                     continue
                 
                 if fk_value == 0:
@@ -374,7 +387,7 @@ async def load(message):
                     
                     if not exists_in_db:
                         if related_model == Player:
-                            # Skip this ball instance — don't create ghost players
+                            # Skip this ball instance â€” don't create ghost players
                             skipped_log.write(f"{item.__name__} - ID: {model_id} - SKIPPED: player_id={fk_value} not found (ghost player avoided)\n")
                             has_invalid_fk = True
                             fk_violation_count += 1
@@ -656,7 +669,7 @@ async def load(message):
     skipped_special = 0
     async for bi in BallInstance.all().only("id", "special_id"):
         pass  # special_id was already set correctly during import via the
-              # exclusive_id/event_id columns — see BI processing above.
+              # exclusive_id/event_id columns â€” see BI processing above.
               # The export puts exclusive_id before event_id in the field list,
               # and the importer picks up the first non-null one as special_id.
 
@@ -667,7 +680,7 @@ async def load(message):
     )
     if skipped_bi_count > 0:
         await ctx.send(  # type: ignore # noqa: F821
-            f"⚠️ **{skipped_bi_count} BallInstances were skipped during migration.**\n"
+            f"âš ï¸ **{skipped_bi_count} BallInstances were skipped during migration.**\n"
             "Common reasons:\n"
             "- Player no longer exists (ghost player avoided)\n"
             "- Referenced Ball ID not found in migrated data\n"
@@ -719,7 +732,7 @@ async def load(message):
         pass
 
     if skipped_balls > 0 or skipped_players > 0 or skipped_bis > 0:
-        msg = "⚠️ **Skipped Records:**\n"
+        msg = "âš ï¸ **Skipped Records:**\n"
         if skipped_balls > 0:
             msg += f"- **{skipped_balls} Balls**: Required fields null/invalid\n"
         if skipped_players > 0:
