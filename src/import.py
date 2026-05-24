@@ -79,10 +79,10 @@ SECTIONS = {
     "P": [Player, None],
     "GC": [GuildConfig, None],
     "F": [Friendship, None],
-    "BU": [BlacklistedID, ["id", "date", "discord_id", "reason"]],
-    "BG": [BlacklistedGuild, ["id", "date", "discord_id", "reason"]],
-    "T": [Trade, ["id", "date", "player1_id", "player2_id"]],
-    "TO": [TradeObject, ["id", "ballinstance_id", "player_id", "trade_id"]],
+    "BU": [BlacklistedID, None],
+    "BG": [BlacklistedGuild, None],
+    "T": [Trade, None],
+    "TO": [TradeObject, None],
 }
 
 def read_bz2(path: str):
